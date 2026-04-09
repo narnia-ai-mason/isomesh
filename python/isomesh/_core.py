@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -30,9 +32,10 @@ def extract(
         Vectorized implicit function:
         (N,3) float64 -> ((N,) float64, (N,3) float64 | None).
     bbox_min, bbox_max : tuple of 3 floats
-        Axis-aligned bounding box.
+        Axis-aligned bounding box. If non-cubic, it will be expanded to the
+        smallest enclosing cube (centered on the original bbox center).
     min_depth, max_depth : int
-        Octree depth range.
+        Octree depth range. Cell count per axis = 2^depth.
     angle_threshold : float
         Degrees. Normals differing by more than this trigger sharp-feature handling.
     iso_value : float
@@ -50,6 +53,19 @@ def extract(
     bbox_min_arr, bbox_max_arr = validate_bbox(bbox_min, bbox_max)
     validate_depth(min_depth, max_depth)
     validate_angle_threshold(angle_threshold)
+
+    # Warn if bbox will be expanded to cubic
+    extents = bbox_max_arr - bbox_min_arr
+    if not np.allclose(extents, extents[0]):
+        max_extent = extents.max()
+        center = (bbox_min_arr + bbox_max_arr) * 0.5
+        expanded_min = center - max_extent / 2
+        expanded_max = center + max_extent / 2
+        warnings.warn(
+            f"Non-cubic bounding box expanded to cubic: "
+            f"[{expanded_min.tolist()}] to [{expanded_max.tolist()}]",
+            stacklevel=2,
+        )
 
     # Build the callback adapter that always returns numpy arrays
     def _eval_batch(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
