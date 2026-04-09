@@ -15,3 +15,8 @@ target/
 *.dylib
 *.pyd
 *.dll
+
+# Output artifacts
+output/*.stl
+output/*.json
+.DS_Store

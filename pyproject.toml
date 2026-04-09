@@ -32,3 +32,8 @@ markers = [
     "benchmark: marks benchmark tests",
     "torch: marks tests requiring torch",
 ]
+
+[dependency-groups]
+dev = [
+    "pymcubes>=0.1.6",
+]
