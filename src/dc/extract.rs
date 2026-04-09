@@ -91,11 +91,65 @@ pub fn extract_dc(
 
     let mut vertices = Vec::with_capacity(leaves.len());
     let mut leaf_vertex: Vec<Option<usize>> = vec![None; leaves.len()];
+    let mut vertex_cell_bounds: Vec<([f64; 3], [f64; 3])> = Vec::new();
     for (i, leaf) in leaves.iter().enumerate() {
         if qefs[i].count == 0 { continue; }
-        let (pos, _) = qefs[i].solve(leaf.bounds.corner(0), leaf.bounds.corner(7));
+        let cell_min = leaf.bounds.corner(0);
+        let cell_max = leaf.bounds.corner(7);
+        let (pos, _) = qefs[i].solve(cell_min, cell_max);
         leaf_vertex[i] = Some(vertices.len());
         vertices.push(pos);
+        vertex_cell_bounds.push((cell_min, cell_max));
+    }
+
+    // Step 4b: Project vertices onto isosurface via Newton step.
+    // QEF vertices are close to the surface but may be slightly off,
+    // causing zigzag artifacts at feature boundaries. One Newton iteration
+    // moves each vertex exactly onto the zero-isosurface:
+    //   x' = x - f(x) * grad(x) / |grad(x)|^2
+    // Sharp feature vertices (corners/edges) are already on the surface
+    // so the correction is negligible for them.
+    if !vertices.is_empty() {
+        let proj_result = bridge::batch_evaluate(py, func, &vertices)?;
+        if let Some(ref grads) = proj_result.gradients {
+            for i in 0..vertices.len() {
+                let f_val = proj_result.values[i] - iso_value;
+                let g = grads[i];
+                let g_sq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
+                if g_sq > 1e-20 {
+                    let step = f_val / g_sq;
+                    vertices[i][0] -= step * g[0];
+                    vertices[i][1] -= step * g[1];
+                    vertices[i][2] -= step * g[2];
+                    // Clamp to cell bounds to maintain topology
+                    let (cmin, cmax) = vertex_cell_bounds[i];
+                    for d in 0..3 {
+                        vertices[i][d] = vertices[i][d].clamp(cmin[d], cmax[d]);
+                    }
+                }
+            }
+        } else {
+            // FD gradient for projection
+            let cell_size = octree.bounds.size / (1u32 << octree.max_depth) as f64;
+            let proj_grads = bridge::estimate_gradients_fd(
+                py, func, &vertices, cell_size * 0.01
+            )?;
+            for i in 0..vertices.len() {
+                let f_val = proj_result.values[i] - iso_value;
+                let g = proj_grads[i];
+                let g_sq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
+                if g_sq > 1e-20 {
+                    let step = f_val / g_sq;
+                    vertices[i][0] -= step * g[0];
+                    vertices[i][1] -= step * g[1];
+                    vertices[i][2] -= step * g[2];
+                    let (cmin, cmax) = vertex_cell_bounds[i];
+                    for d in 0..3 {
+                        vertices[i][d] = vertices[i][d].clamp(cmin[d], cmax[d]);
+                    }
+                }
+            }
+        }
     }
 
     // Step 5: Generate quads from canonical edges (0, 4, 8)
