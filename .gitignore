@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Rust build artifacts
+target/
+*.so
+*.dylib
+*.pyd
+*.dll
