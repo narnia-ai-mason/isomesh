@@ -125,6 +125,42 @@ pub fn jacobi_eigen_3x3(m: &Sym3x3) -> ([f64; 3], [[f64; 3]; 3]) {
     (eigenvalues, eigenvectors)
 }
 
+/// Solve Ax = b for a 3x3 symmetric positive-definite matrix via LDL^T factorization.
+///
+/// A is given as Sym3x3 = [a00, a01, a02, a11, a12, a22].
+/// Precondition: A must be positive definite (guaranteed by probabilistic quadrics
+/// regularization term σ_n² · I).
+pub fn ldlt_solve_3x3(a: &Sym3x3, b: [f64; 3]) -> [f64; 3] {
+    // LDL^T factorization (unrolled for 3x3)
+    let d0 = a[0]; // a00
+    let inv_d0 = 1.0 / d0;
+    let l10 = a[1] * inv_d0; // a01 / a00
+    let l20 = a[2] * inv_d0; // a02 / a00
+
+    let d1 = a[3] - a[1] * l10; // a11 - a01²/a00
+    let inv_d1 = 1.0 / d1;
+    let l21 = (a[4] - a[2] * l10) * inv_d1; // (a12 - a02·l10) / d1
+
+    let d2 = a[5] - a[2] * l20 - (a[4] - a[2] * l10) * l21;
+
+    // Forward substitution: L y = b
+    let y0 = b[0];
+    let y1 = b[1] - l10 * y0;
+    let y2 = b[2] - l20 * y0 - l21 * y1;
+
+    // Diagonal solve: D z = y
+    let z0 = y0 * inv_d0;
+    let z1 = y1 * inv_d1;
+    let z2 = y2 / d2;
+
+    // Back substitution: L^T x = z
+    let x2 = z2;
+    let x1 = z1 - l21 * x2;
+    let x0 = z0 - l10 * x1 - l20 * x2;
+
+    [x0, x1, x2]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +196,53 @@ mod tests {
                 assert!((av[j] - lv[j]).abs() < 1e-8,
                     "Eigenvector {} component {} mismatch: {} vs {}", i, j, av[j], lv[j]);
             }
+        }
+    }
+
+    #[test]
+    fn test_ldlt_identity() {
+        let a: Sym3x3 = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0];
+        let b = [3.0, 5.0, 7.0];
+        let x = ldlt_solve_3x3(&a, b);
+        for i in 0..3 {
+            assert!((x[i] - b[i]).abs() < 1e-12, "component {}: {}", i, x[i]);
+        }
+    }
+
+    #[test]
+    fn test_ldlt_known_spd() {
+        // A = [[4,2,1],[2,5,3],[1,3,6]] (SPD)
+        let a: Sym3x3 = [4.0, 2.0, 1.0, 5.0, 3.0, 6.0];
+        let b = [1.0, 2.0, 3.0];
+        let x = ldlt_solve_3x3(&a, b);
+        let ax = sym_mul_vec(&a, x);
+        for i in 0..3 {
+            assert!((ax[i] - b[i]).abs() < 1e-10,
+                "component {}: Ax={} vs b={}", i, ax[i], b[i]);
+        }
+    }
+
+    #[test]
+    fn test_ldlt_diagonal() {
+        let a: Sym3x3 = [2.0, 0.0, 0.0, 3.0, 0.0, 5.0];
+        let b = [4.0, 9.0, 15.0];
+        let x = ldlt_solve_3x3(&a, b);
+        assert!((x[0] - 2.0).abs() < 1e-12);
+        assert!((x[1] - 3.0).abs() < 1e-12);
+        assert!((x[2] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_ldlt_regularized_rank1() {
+        // Rank-1 (n=[1,0,0] outer product) + ε·I simulates probabilistic quadrics
+        let eps = 0.01;
+        let a: Sym3x3 = [1.0 + eps, 0.0, 0.0, eps, 0.0, eps];
+        let b = [0.5 + eps * 0.3, eps * 0.4, eps * 0.5];
+        let x = ldlt_solve_3x3(&a, b);
+        let ax = sym_mul_vec(&a, x);
+        for i in 0..3 {
+            assert!((ax[i] - b[i]).abs() < 1e-10,
+                "component {}: Ax={} vs b={}", i, ax[i], b[i]);
         }
     }
 }

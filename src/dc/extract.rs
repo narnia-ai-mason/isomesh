@@ -96,10 +96,14 @@ pub fn extract_dc(
         Vec::new()
     };
 
-    // Step 4: QEF vertex placement per leaf cell
+    // Step 4: QEF vertex placement per leaf cell (probabilistic quadrics)
+    let cell_size = octree.bounds.size / (1u32 << octree.max_depth) as f64;
+    let sigma_n: f64 = 0.01;
+    let sigma_p: f64 = 0.01 * cell_size;
+
     let mut qefs = vec![QefData::new(); leaves.len()];
     for (i, &(leaf_idx, _)) in edge_leaf_map.iter().enumerate() {
-        qefs[leaf_idx].add(crossing_points[i], normals[i]);
+        qefs[leaf_idx].add(crossing_points[i], normals[i], sigma_n, sigma_p);
     }
 
     // Pass 1 (parallel): solve QEF per leaf independently

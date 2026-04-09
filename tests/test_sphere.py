@@ -41,8 +41,10 @@ def test_sphere_hausdorff_decreases_with_depth():
         )
         results.append(hausdorff_to_analytic(v, sdf_sphere))
     for i in range(len(results) - 1):
-        assert results[i + 1] <= results[i] * 1.1, (
-            f"Hausdorff did not decrease: depth {i+3}={results[i]:.4f} -> {i+4}={results[i+1]:.4f}"
+        # Allow absolute tolerance for near-zero Hausdorff (Newton projection
+        # can achieve machine precision, making relative comparison meaningless)
+        assert results[i + 1] <= results[i] * 1.1 + 1e-3, (
+            f"Hausdorff did not decrease: depth {i+3}={results[i]:.6f} -> {i+4}={results[i+1]:.6f}"
         )
 
 
