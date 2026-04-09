@@ -2,7 +2,7 @@
 
 Fast, robust isosurface extraction from arbitrary implicit functions using adaptive octree and Dual Contouring.
 
-![isomesh vs PyMCubes](docs/images/comparison_grid.png)
+![isomesh gallery](docs/images/gallery.png)
 
 ## Features
 
@@ -74,25 +74,34 @@ def f(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
     """
 ```
 
-## isomesh vs PyMCubes
+## Dual Contouring vs Marching Cubes
 
 ### Sharp Feature Preservation
 
-At low resolution, the difference is stark. Dual Contouring places vertices at geometric feature intersections via QEF, while Marching Cubes rounds them by linear interpolation on edges.
+At low resolution, the difference is stark. DC places vertices at geometric feature intersections via QEF, while MC rounds them by linear interpolation on edges.
 
-![Box sharp feature comparison](docs/images/box_sharp_comparison.png)
+![Box low-res comparison](docs/images/box_lowres_vs.png)
 
-| Metric | isomesh (DC) | PyMCubes (MC) |
-|--------|:-----------:|:-------------:|
+| Metric | isomesh (DC) | MC |
+|--------|:-----------:|:--:|
 | Box corner distance | **0.0000** | 0.0884 |
 | Box edge distance | **0.005** | 0.075 |
+
+### Visual Comparison
+
+| Shape | | |
+|-------|---|---|
+| **Chamfered Box** | ![](docs/images/chamfered_box_vs.png) | |
+| **CSG Cross** | ![](docs/images/csg_cross_vs.png) | |
+| **Torus** | ![](docs/images/torus_vs.png) | |
+| **Sphere** | ![](docs/images/sphere_vs.png) | |
 
 ### Surface Accuracy
 
 Newton projection places all vertices exactly on the isosurface:
 
-| Metric (depth 7) | isomesh | PyMCubes |
-|-------------------|:-------:|:--------:|
+| Metric (depth 7) | isomesh (DC) | MC |
+|-------------------|:-------:|:--:|
 | Sphere Hausdorff | **0.000000** | 0.000068 |
 | Chamfered box max \|SDF\| | **0.000000** | 0.000000 |
 
@@ -100,7 +109,7 @@ Newton projection places all vertices exactly on the isosurface:
 
 Adaptive refinement evaluates the function only near the surface and at feature boundaries:
 
-| Shape (depth 7 quality) | isomesh (adaptive) | PyMCubes (uniform) |
+| Shape (depth 7 quality) | isomesh (adaptive) | MC (uniform) |
 |-------------------------|:------------------:|:------------------:|
 | Chamfered box | 0.145s | 0.115s |
 | Sphere | 0.066s | 0.057s |
@@ -182,8 +191,8 @@ The benchmark suite includes 16 shapes across 5 categories:
 | Thin features | Thin plate, Thin shell |
 
 ```bash
-python benchmarks/run_benchmark.py      # full benchmark suite
-python benchmarks/compare_visual.py     # visual comparison renders
+python benchmarks/run_benchmark.py
+python benchmarks/render_readme_images.py
 ```
 
 ## References
