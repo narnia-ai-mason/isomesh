@@ -1,0 +1,7 @@
+[project]
+name = "isomesh"
+version = "0.1.0"
+description = "Fast, robust isosurface extraction from arbitrary implicit functions using adaptive octree and dual contouring"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
