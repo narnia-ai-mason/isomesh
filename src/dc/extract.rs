@@ -148,13 +148,27 @@ pub fn extract_dc(
                 [verts[ccw[3]], verts[ccw[2]], verts[ccw[1]], verts[ccw[0]]]
             };
 
-            // Split quad along the shorter diagonal for better triangle quality.
-            // Diagonal a-c vs b-d: shorter diagonal produces more equilateral
-            // triangles and better surface approximation on curved regions.
+            // Split quad along the diagonal that produces the flatter pair
+            // of triangles (smaller normal deviation between the two halves).
+            // This naturally follows feature boundaries: a diagonal that
+            // crosses a feature creates triangles with very different normals,
+            // while one that follows the boundary keeps normals consistent.
             let [a, b, c, d] = quad;
-            let diag_ac = dist_sq(&vertices[a], &vertices[c]);
-            let diag_bd = dist_sq(&vertices[b], &vertices[d]);
-            if diag_ac <= diag_bd {
+            let pa = vertices[a]; let pb = vertices[b];
+            let pc = vertices[c]; let pd = vertices[d];
+
+            // Diagonal a-c: triangles (a,b,c) and (a,c,d)
+            let n1_ac = tri_normal(pa, pb, pc);
+            let n2_ac = tri_normal(pa, pc, pd);
+            let dot_ac = n1_ac[0]*n2_ac[0] + n1_ac[1]*n2_ac[1] + n1_ac[2]*n2_ac[2];
+
+            // Diagonal b-d: triangles (a,b,d) and (b,c,d)
+            let n1_bd = tri_normal(pa, pb, pd);
+            let n2_bd = tri_normal(pb, pc, pd);
+            let dot_bd = n1_bd[0]*n2_bd[0] + n1_bd[1]*n2_bd[1] + n1_bd[2]*n2_bd[2];
+
+            // Higher dot product = smaller angle between normals = flatter split
+            if dot_ac >= dot_bd {
                 faces.push([a as i64, b as i64, c as i64]);
                 faces.push([a as i64, c as i64, d as i64]);
             } else {
@@ -195,11 +209,17 @@ fn collect_leaves_recursive(
     }
 }
 
-fn dist_sq(a: &[f64; 3], b: &[f64; 3]) -> f64 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    dx * dx + dy * dy + dz * dz
+/// Unnormalized triangle normal via cross product.
+fn tri_normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
+    let ab = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
+    let ac = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
+    let n = [
+        ab[1]*ac[2] - ab[2]*ac[1],
+        ab[2]*ac[0] - ab[0]*ac[2],
+        ab[0]*ac[1] - ab[1]*ac[0],
+    ];
+    let len = (n[0]*n[0] + n[1]*n[1] + n[2]*n[2]).sqrt();
+    if len > 1e-15 { [n[0]/len, n[1]/len, n[2]/len] } else { [0.0, 0.0, 0.0] }
 }
 
 fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
