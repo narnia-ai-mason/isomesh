@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use crate::bbox::CubicBounds;
 use crate::eval::bridge;
@@ -51,23 +52,33 @@ pub fn extract_dc(
 
     // Step 2: Find edge crossings via linear interpolation (no extra Python calls)
     // and collect crossing points for normal estimation.
+    let edge_results: Vec<Vec<([f64; 3], (usize, u8))>> = leaves
+        .par_iter()
+        .enumerate()
+        .map(|(idx, leaf)| {
+            let mut local = Vec::new();
+            for edge in 0..12u8 {
+                let (c0, c1) = CubicBounds::edge_corners(edge);
+                let v0 = leaf.data.corner_values[c0 as usize] - iso_value;
+                let v1 = leaf.data.corner_values[c1 as usize] - iso_value;
+                if (v0 < 0.0) != (v1 < 0.0) {
+                    let dv = v1 - v0;
+                    let t = if dv.abs() > 1e-15 { (-v0 / dv).clamp(0.001, 0.999) } else { 0.5 };
+                    let p0 = leaf.bounds.corner(c0);
+                    let p1 = leaf.bounds.corner(c1);
+                    local.push((lerp3(p0, p1, t), (idx, edge)));
+                }
+            }
+            local
+        })
+        .collect();
+
     let mut crossing_points: Vec<[f64; 3]> = Vec::new();
     let mut edge_leaf_map: Vec<(usize, u8)> = Vec::new();
-
-    for (idx, leaf) in leaves.iter().enumerate() {
-        for edge in 0..12u8 {
-            let (c0, c1) = CubicBounds::edge_corners(edge);
-            let v0 = leaf.data.corner_values[c0 as usize] - iso_value;
-            let v1 = leaf.data.corner_values[c1 as usize] - iso_value;
-            if (v0 < 0.0) != (v1 < 0.0) {
-                // Linear interpolation: t = -v0 / (v1 - v0)
-                let dv = v1 - v0;
-                let t = if dv.abs() > 1e-15 { (-v0 / dv).clamp(0.001, 0.999) } else { 0.5 };
-                let p0 = leaf.bounds.corner(c0);
-                let p1 = leaf.bounds.corner(c1);
-                crossing_points.push(lerp3(p0, p1, t));
-                edge_leaf_map.push((idx, edge));
-            }
+    for chunk in &edge_results {
+        for &(pt, mapping) in chunk {
+            crossing_points.push(pt);
+            edge_leaf_map.push(mapping);
         }
     }
 
@@ -91,17 +102,32 @@ pub fn extract_dc(
         qefs[leaf_idx].add(crossing_points[i], normals[i]);
     }
 
+    // Pass 1 (parallel): solve QEF per leaf independently
+    let qef_solutions: Vec<Option<([f64; 3], [f64; 3], [f64; 3])>> = leaves
+        .par_iter()
+        .enumerate()
+        .map(|(i, leaf)| {
+            if qefs[i].count == 0 {
+                None
+            } else {
+                let cell_min = leaf.bounds.corner(0);
+                let cell_max = leaf.bounds.corner(7);
+                let (pos, _) = qefs[i].solve(cell_min, cell_max);
+                Some((pos, cell_min, cell_max))
+            }
+        })
+        .collect();
+
+    // Pass 2 (sequential): assign contiguous vertex indices
     let mut vertices = Vec::with_capacity(leaves.len());
     let mut leaf_vertex: Vec<Option<usize>> = vec![None; leaves.len()];
     let mut vertex_cell_bounds: Vec<([f64; 3], [f64; 3])> = Vec::new();
-    for (i, leaf) in leaves.iter().enumerate() {
-        if qefs[i].count == 0 { continue; }
-        let cell_min = leaf.bounds.corner(0);
-        let cell_max = leaf.bounds.corner(7);
-        let (pos, _) = qefs[i].solve(cell_min, cell_max);
-        leaf_vertex[i] = Some(vertices.len());
-        vertices.push(pos);
-        vertex_cell_bounds.push((cell_min, cell_max));
+    for (i, solution) in qef_solutions.iter().enumerate() {
+        if let Some((pos, cell_min, cell_max)) = solution {
+            leaf_vertex[i] = Some(vertices.len());
+            vertices.push(*pos);
+            vertex_cell_bounds.push((*cell_min, *cell_max));
+        }
     }
 
     // Step 4b: Project vertices onto isosurface via Newton step.
@@ -114,49 +140,46 @@ pub fn extract_dc(
     if !vertices.is_empty() {
         let proj_result = bridge::batch_evaluate(py, func, &vertices)?;
         if let Some(ref grads) = proj_result.gradients {
-            for i in 0..vertices.len() {
+            vertices.par_iter_mut().enumerate().for_each(|(i, vert)| {
                 let f_val = proj_result.values[i] - iso_value;
                 let g = grads[i];
                 let g_sq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
                 if g_sq > 1e-20 {
                     let step = f_val / g_sq;
-                    vertices[i][0] -= step * g[0];
-                    vertices[i][1] -= step * g[1];
-                    vertices[i][2] -= step * g[2];
-                    // Clamp to cell bounds to maintain topology
+                    vert[0] -= step * g[0];
+                    vert[1] -= step * g[1];
+                    vert[2] -= step * g[2];
                     let (cmin, cmax) = vertex_cell_bounds[i];
                     for d in 0..3 {
-                        vertices[i][d] = vertices[i][d].clamp(cmin[d], cmax[d]);
+                        vert[d] = vert[d].clamp(cmin[d], cmax[d]);
                     }
                 }
-            }
+            });
         } else {
             // FD gradient for projection
             let cell_size = octree.bounds.size / (1u32 << octree.max_depth) as f64;
             let proj_grads = bridge::estimate_gradients_fd(
                 py, func, &vertices, cell_size * 0.01
             )?;
-            for i in 0..vertices.len() {
+            vertices.par_iter_mut().enumerate().for_each(|(i, vert)| {
                 let f_val = proj_result.values[i] - iso_value;
                 let g = proj_grads[i];
                 let g_sq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
                 if g_sq > 1e-20 {
                     let step = f_val / g_sq;
-                    vertices[i][0] -= step * g[0];
-                    vertices[i][1] -= step * g[1];
-                    vertices[i][2] -= step * g[2];
+                    vert[0] -= step * g[0];
+                    vert[1] -= step * g[1];
+                    vert[2] -= step * g[2];
                     let (cmin, cmax) = vertex_cell_bounds[i];
                     for d in 0..3 {
-                        vertices[i][d] = vertices[i][d].clamp(cmin[d], cmax[d]);
+                        vert[d] = vert[d].clamp(cmin[d], cmax[d]);
                     }
                 }
-            }
+            });
         }
     }
 
     // Step 5: Generate quads from canonical edges (0, 4, 8)
-    let mut faces = Vec::new();
-
     const CANONICAL_EDGES: [u8; 3] = [0, 4, 8];
     const NON_AXIS_DIMS: [(usize, usize); 3] = [(1, 2), (0, 2), (0, 1)];
     const CCW_ORDER: [[usize; 4]; 3] = [
@@ -165,64 +188,73 @@ pub fn extract_dc(
         [0, 1, 3, 2], // Z-axis
     ];
 
-    for (leaf_idx, leaf) in leaves.iter().enumerate() {
-        if leaf_vertex[leaf_idx].is_none() { continue; }
+    let faces: Vec<[i64; 3]> = leaves
+        .par_iter()
+        .enumerate()
+        .map(|(leaf_idx, leaf)| {
+            let mut local_faces = Vec::new();
+            if leaf_vertex[leaf_idx].is_none() { return local_faces; }
 
-        let cell_coords = [leaf.key.0, leaf.key.1, leaf.key.2];
+            let cell_coords = [leaf.key.0, leaf.key.1, leaf.key.2];
 
-        for axis in 0..3usize {
-            let edge_idx = CANONICAL_EDGES[axis];
-            let (a1, a2) = NON_AXIS_DIMS[axis];
+            for axis in 0..3usize {
+                let edge_idx = CANONICAL_EDGES[axis];
+                let (a1, a2) = NON_AXIS_DIMS[axis];
 
-            let (c0, c1) = CubicBounds::edge_corners(edge_idx);
-            let val0 = leaf.data.corner_values[c0 as usize] - iso_value;
-            let val1 = leaf.data.corner_values[c1 as usize] - iso_value;
-            if (val0 < 0.0) == (val1 < 0.0) { continue; }
+                let (c0, c1) = CubicBounds::edge_corners(edge_idx);
+                let val0 = leaf.data.corner_values[c0 as usize] - iso_value;
+                let val1 = leaf.data.corner_values[c1 as usize] - iso_value;
+                if (val0 < 0.0) == (val1 < 0.0) { continue; }
 
-            if cell_coords[a1] == 0 || cell_coords[a2] == 0 { continue; }
+                if cell_coords[a1] == 0 || cell_coords[a2] == 0 { continue; }
 
-            let mut n_a1 = cell_coords; n_a1[a1] -= 1;
-            let mut n_a2 = cell_coords; n_a2[a2] -= 1;
-            let mut n_both = cell_coords; n_both[a1] -= 1; n_both[a2] -= 1;
+                let mut n_a1 = cell_coords; n_a1[a1] -= 1;
+                let mut n_a2 = cell_coords; n_a2[a2] -= 1;
+                let mut n_both = cell_coords; n_both[a1] -= 1; n_both[a2] -= 1;
 
-            let Some(&ni_a1) = cell_map.get(&(n_a1[0], n_a1[1], n_a1[2])) else { continue; };
-            let Some(&ni_a2) = cell_map.get(&(n_a2[0], n_a2[1], n_a2[2])) else { continue; };
-            let Some(&ni_both) = cell_map.get(&(n_both[0], n_both[1], n_both[2])) else { continue; };
+                let Some(&ni_a1) = cell_map.get(&(n_a1[0], n_a1[1], n_a1[2])) else { continue; };
+                let Some(&ni_a2) = cell_map.get(&(n_a2[0], n_a2[1], n_a2[2])) else { continue; };
+                let Some(&ni_both) = cell_map.get(&(n_both[0], n_both[1], n_both[2])) else { continue; };
 
-            let Some(v0) = leaf_vertex[leaf_idx] else { continue; };
-            let Some(v1) = leaf_vertex[ni_a1] else { continue; };
-            let Some(v2) = leaf_vertex[ni_a2] else { continue; };
-            let Some(v3) = leaf_vertex[ni_both] else { continue; };
+                let Some(v0) = leaf_vertex[leaf_idx] else { continue; };
+                let Some(v1) = leaf_vertex[ni_a1] else { continue; };
+                let Some(v2) = leaf_vertex[ni_a2] else { continue; };
+                let Some(v3) = leaf_vertex[ni_both] else { continue; };
 
-                    let verts = [v0, v1, v2, v3];
-                    let ccw = CCW_ORDER[axis];
+                let verts = [v0, v1, v2, v3];
+                let ccw = CCW_ORDER[axis];
 
-                    let quad = if val0 < 0.0 {
-                        [verts[ccw[0]], verts[ccw[1]], verts[ccw[2]], verts[ccw[3]]]
-                    } else {
-                        [verts[ccw[3]], verts[ccw[2]], verts[ccw[1]], verts[ccw[0]]]
-                    };
+                let quad = if val0 < 0.0 {
+                    [verts[ccw[0]], verts[ccw[1]], verts[ccw[2]], verts[ccw[3]]]
+                } else {
+                    [verts[ccw[3]], verts[ccw[2]], verts[ccw[1]], verts[ccw[0]]]
+                };
 
-                    // Flatness-based diagonal: choose flatter split
-                    let [a, b, c, d] = quad;
-                    let pa = vertices[a]; let pb = vertices[b];
-                    let pc = vertices[c]; let pd = vertices[d];
-                    let n1_ac = tri_normal(pa, pb, pc);
-                    let n2_ac = tri_normal(pa, pc, pd);
-                    let dot_ac = n1_ac[0]*n2_ac[0] + n1_ac[1]*n2_ac[1] + n1_ac[2]*n2_ac[2];
-                    let n1_bd = tri_normal(pa, pb, pd);
-                    let n2_bd = tri_normal(pb, pc, pd);
-                    let dot_bd = n1_bd[0]*n2_bd[0] + n1_bd[1]*n2_bd[1] + n1_bd[2]*n2_bd[2];
+                // Flatness-based diagonal: choose flatter split
+                let [a, b, c, d] = quad;
+                let pa = vertices[a]; let pb = vertices[b];
+                let pc = vertices[c]; let pd = vertices[d];
+                let n1_ac = tri_normal(pa, pb, pc);
+                let n2_ac = tri_normal(pa, pc, pd);
+                let dot_ac = n1_ac[0]*n2_ac[0] + n1_ac[1]*n2_ac[1] + n1_ac[2]*n2_ac[2];
+                let n1_bd = tri_normal(pa, pb, pd);
+                let n2_bd = tri_normal(pb, pc, pd);
+                let dot_bd = n1_bd[0]*n2_bd[0] + n1_bd[1]*n2_bd[1] + n1_bd[2]*n2_bd[2];
 
-                    if dot_ac >= dot_bd {
-                        faces.push([a as i64, b as i64, c as i64]);
-                        faces.push([a as i64, c as i64, d as i64]);
-                    } else {
-                        faces.push([a as i64, b as i64, d as i64]);
-                        faces.push([b as i64, c as i64, d as i64]);
-                    }
-        }
-    }
+                if dot_ac >= dot_bd {
+                    local_faces.push([a as i64, b as i64, c as i64]);
+                    local_faces.push([a as i64, c as i64, d as i64]);
+                } else {
+                    local_faces.push([a as i64, b as i64, d as i64]);
+                    local_faces.push([b as i64, c as i64, d as i64]);
+                }
+            }
+            local_faces
+        })
+        .collect::<Vec<Vec<[i64; 3]>>>()
+        .into_iter()
+        .flatten()
+        .collect();
 
     Ok(ExtractedMesh { vertices, faces })
 }
