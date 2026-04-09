@@ -19,4 +19,5 @@ target/
 # Output artifacts
 output/*.stl
 output/*.json
+output/*.png
 .DS_Store
