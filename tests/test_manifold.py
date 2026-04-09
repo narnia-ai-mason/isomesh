@@ -38,38 +38,49 @@ class TestFaceValidity:
         assert check_no_degenerate_faces(f), f"{name}: degenerate faces found"
 
 
-class TestManifold:
-    def test_sphere_manifold_stats(self):
-        """Check manifold properties and report non-manifold edges.
-
-        Basic DC can produce some non-manifold edges at cell boundaries.
-        MDC extension will guarantee manifold output.
-        """
+class TestManifoldWatertight:
+    def test_sphere_manifold(self):
         v, f = _extract(sdf_sphere)
         result = check_manifold_watertight(v, f)
-        # Report stats — full manifold guarantee requires MDC (Phase 6+)
-        total_edges = result["E"]
-        nm_edges = len(result["non_manifold_edges"])
-        nm_ratio = nm_edges / max(total_edges, 1)
-        # Non-manifold edges should be a small fraction
-        assert nm_ratio < 0.1, (
-            f"Too many non-manifold edges: {nm_edges}/{total_edges} ({nm_ratio:.1%})"
+        assert result["is_manifold"], (
+            f"Sphere non-manifold: {len(result['non_manifold_edges'])} edges, "
+            f"e.g. {result['non_manifold_edges'][:3]}"
+        )
+
+    def test_sphere_watertight(self):
+        v, f = _extract(sdf_sphere)
+        result = check_manifold_watertight(v, f)
+        assert result["is_watertight"], (
+            f"Sphere not watertight: {len(result['boundary_edges'])} boundary edges"
         )
 
     def test_sphere_euler_characteristic(self):
+        """Genus-0 closed surface: V - E + F = 2."""
         v, f = _extract(sdf_sphere)
         result = check_manifold_watertight(v, f)
-        # For Basic DC, Euler characteristic may deviate from 2
-        # Log it for tracking; MDC will guarantee V-E+F=2
-        euler = result["euler_characteristic"]
-        assert abs(euler - 2) < 100, (
-            f"Sphere Euler too far from 2: {euler} "
+        assert result["euler_characteristic"] == 2, (
+            f"Sphere Euler={result['euler_characteristic']} "
             f"(V={result['V']}, E={result['E']}, F={result['F']})"
         )
 
-    def test_box_produces_mesh(self):
+    def test_sphere_consistent_winding(self):
+        v, f = _extract(sdf_sphere)
+        result = check_manifold_watertight(v, f)
+        assert result["consistent_winding"], "Sphere has inconsistent face winding"
+
+    def test_box_manifold(self):
         v, f = _extract(sdf_box)
-        assert len(v) > 0 and len(f) > 0
+        result = check_manifold_watertight(v, f)
+        assert result["is_manifold"], (
+            f"Box non-manifold: {len(result['non_manifold_edges'])} edges"
+        )
+
+    def test_box_watertight(self):
+        v, f = _extract(sdf_box)
+        result = check_manifold_watertight(v, f)
+        assert result["is_watertight"], (
+            f"Box not watertight: {len(result['boundary_edges'])} boundary edges"
+        )
 
     def test_torus_produces_mesh(self):
         v, f = _extract(sdf_torus, depth=4)

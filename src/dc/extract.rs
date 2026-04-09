@@ -6,13 +6,11 @@ use crate::octree::Octree;
 use crate::octree::cell::{Cell, LeafData};
 use crate::qef::quadric::QefData;
 
-/// Extracted mesh: vertices and triangle faces.
 pub struct ExtractedMesh {
     pub vertices: Vec<[f64; 3]>,
     pub faces: Vec<[i64; 3]>,
 }
 
-/// Key for a leaf cell: grid coordinates at its depth.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct CellKey(u32, u32, u32, u8);
 
@@ -24,6 +22,11 @@ struct LeafInfo {
 }
 
 /// Extract a triangle mesh using Dual Contouring.
+///
+/// For each leaf cell, processes the 3 canonical edges (edges 0, 4, 8 — at the
+/// cell's min corner in both non-axis dimensions). For each edge with a sign
+/// change, finds the 3 neighboring cells sharing that edge and emits a quad
+/// (split into 2 triangles) connecting the 4 QEF vertices.
 pub fn extract_dc(
     py: Python<'_>,
     func: &PyObject,
@@ -39,17 +42,13 @@ pub fn extract_dc(
         return Ok(ExtractedMesh { vertices: Vec::new(), faces: Vec::new() });
     }
 
-    // Determine the effective depth for uniform-like processing
-    // For now, all leaves should be at the same depth (uniform or adaptively refined to same level)
-    let leaf_depth = leaves[0].depth;
-
-    // Build cell lookup by grid coordinates
+    // Build cell lookup by (x, y, z, depth)
     let mut cell_map: HashMap<CellKey, usize> = HashMap::new();
     for (i, leaf) in leaves.iter().enumerate() {
         cell_map.insert(leaf.key, i);
     }
 
-    // Step 2: Find edge crossings via bisection
+    // Step 2: Find edge crossings via bisection (batched)
     let mut all_edge_data: Vec<([f64; 3], [f64; 3], f64, f64)> = Vec::new();
     let mut edge_leaf_map: Vec<(usize, u8)> = Vec::new();
 
@@ -59,11 +58,7 @@ pub fn extract_dc(
             let v0 = leaf.data.corner_values[c0 as usize] - iso_value;
             let v1 = leaf.data.corner_values[c1 as usize] - iso_value;
             if (v0 < 0.0) != (v1 < 0.0) {
-                all_edge_data.push((
-                    leaf.bounds.corner(c0),
-                    leaf.bounds.corner(c1),
-                    v0, v1,
-                ));
+                all_edge_data.push((leaf.bounds.corner(c0), leaf.bounds.corner(c1), v0, v1));
                 edge_leaf_map.push((idx, edge));
             }
         }
@@ -71,7 +66,7 @@ pub fn extract_dc(
 
     let num_crossings = all_edge_data.len();
 
-    // Bisection (10 iterations)
+    // Bisection: 10 iterations (~1/1024 cell accuracy)
     let mut lo = vec![0.0f64; num_crossings];
     let mut hi = vec![1.0f64; num_crossings];
     let mut lo_val: Vec<f64> = all_edge_data.iter().map(|e| e.2).collect();
@@ -79,10 +74,8 @@ pub fn extract_dc(
     if num_crossings > 0 {
         for _ in 0..10 {
             let mid_points: Vec<[f64; 3]> = (0..num_crossings).map(|i| {
-                let t = (lo[i] + hi[i]) * 0.5;
-                lerp3(all_edge_data[i].0, all_edge_data[i].1, t)
+                lerp3(all_edge_data[i].0, all_edge_data[i].1, (lo[i] + hi[i]) * 0.5)
             }).collect();
-
             let result = bridge::batch_evaluate(py, func, &mid_points)?;
             for i in 0..num_crossings {
                 let mid_val = result.values[i] - iso_value;
@@ -97,12 +90,11 @@ pub fn extract_dc(
         }
     }
 
-    // Final crossing points
+    // Final crossing points + normals
     let crossing_points: Vec<[f64; 3]> = (0..num_crossings).map(|i| {
         lerp3(all_edge_data[i].0, all_edge_data[i].1, (lo[i] + hi[i]) * 0.5)
     }).collect();
 
-    // Get normals
     let normals = if num_crossings > 0 {
         let result = bridge::batch_evaluate(py, func, &crossing_points)?;
         if let Some(ref grads) = result.gradients {
@@ -116,7 +108,7 @@ pub fn extract_dc(
         Vec::new()
     };
 
-    // Step 3: QEF vertex placement
+    // Step 3: QEF vertex placement per leaf cell
     let mut qefs = vec![QefData::new(); leaves.len()];
     for (i, &(leaf_idx, _)) in edge_leaf_map.iter().enumerate() {
         qefs[leaf_idx].add(crossing_points[i], normals[i]);
@@ -131,88 +123,94 @@ pub fn extract_dc(
         vertices.push(pos);
     }
 
-    // Step 4: Generate quads from grid edges
-    // In DC, for each grid edge with a sign change, we create a quad
-    // connecting the 4 cells sharing that edge.
+    // Step 4: Generate quads from shared edges
     //
-    // Grid edge approach: iterate over all internal edges of the grid.
-    // An internal edge parallel to axis A at position (e0, e1) in the
-    // two non-axis dimensions is shared by 4 cells at:
-    //   (e0-1, e1-1), (e0, e1-1), (e0-1, e1), (e0, e1)
-    // in the non-axis dimensions (using the min-corner convention).
+    // For each leaf cell, process only its 3 "canonical" edges (edges 0, 4, 8):
+    //   edge 0: X-axis, at cell's (Y=min, Z=min) corner
+    //   edge 4: Y-axis, at cell's (X=min, Z=min) corner
+    //   edge 8: Z-axis, at cell's (X=min, Y=min) corner
+    //
+    // Each canonical edge is shared by exactly 4 cells:
+    //   self, neighbor at -1 in a1, neighbor at -1 in a2, neighbor at -1 in both
+    //
+    // This ensures each grid edge is processed exactly once.
 
     let mut faces = Vec::new();
-    let cells_per_axis = 1u32 << leaf_depth;
 
-    // For each axis (X=0, Y=1, Z=2), iterate over all internal edges
-    for axis in 0..3u32 {
-        let (a1, a2) = match axis {
-            0 => (1u32, 2u32),
-            1 => (0u32, 2u32),
-            _ => (0u32, 1u32),
-        };
+    // Non-axis dimension pairs and CCW vertex ordering per axis.
+    // CCW order gives outward normal in +axis direction.
+    //
+    // For X-axis (a1=Y, a2=Z): 4 cells at offsets (0,0), (-1,0), (0,-1), (-1,-1) in (Y,Z)
+    //   CCW from +X: [self, n_a1, n_both, n_a2] = [0, 1, 3, 2]
+    // For Y-axis (a1=X, a2=Z): offsets in (X,Z)
+    //   CCW from +Y: [self, n_a2, n_both, n_a1] = [0, 2, 3, 1]
+    // For Z-axis (a1=X, a2=Y): offsets in (X,Y)
+    //   CCW from +Z: [self, n_a1, n_both, n_a2] = [0, 1, 3, 2]
+    const CANONICAL_EDGES: [u8; 3] = [0, 4, 8];
+    const NON_AXIS_DIMS: [(usize, usize); 3] = [(1, 2), (0, 2), (0, 1)]; // (a1, a2) per axis
+    const CCW_ORDER: [[usize; 4]; 3] = [
+        [0, 1, 3, 2], // X-axis
+        [0, 2, 3, 1], // Y-axis
+        [0, 1, 3, 2], // Z-axis
+    ];
 
-        // Edge at position (ea, e1, e2) where ea ranges over [0, cells_per_axis)
-        // and e1, e2 range over [1, cells_per_axis) (internal edges only)
-        for ea in 0..cells_per_axis {
-            for e1 in 1..cells_per_axis {
-                for e2 in 1..cells_per_axis {
-                    // The 4 cells sharing this edge
-                    let mut coords = [[0u32; 3]; 4];
-                    for (idx, &(d1, d2)) in [(0i32, 0i32), (-1, 0), (0, -1), (-1, -1)].iter().enumerate() {
-                        coords[idx][axis as usize] = ea;
-                        coords[idx][a1 as usize] = (e1 as i32 + d1) as u32;
-                        coords[idx][a2 as usize] = (e2 as i32 + d2) as u32;
-                    }
+    for (leaf_idx, leaf) in leaves.iter().enumerate() {
+        if leaf_vertex[leaf_idx].is_none() { continue; }
 
-                    // Look up all 4 cells
-                    let cell_indices: Vec<usize> = coords.iter().filter_map(|c| {
-                        cell_map.get(&CellKey(c[0], c[1], c[2], leaf_depth)).copied()
-                    }).collect();
+        let d = leaf.depth;
+        let cx = leaf.key.0;
+        let cy = leaf.key.1;
+        let cz = leaf.key.2;
+        let cell_coords = [cx, cy, cz];
 
-                    if cell_indices.len() != 4 {
-                        continue; // not all 4 cells are leaves with sign changes
-                    }
+        for axis in 0..3usize {
+            let edge_idx = CANONICAL_EDGES[axis];
+            let (a1, a2) = NON_AXIS_DIMS[axis];
 
-                    // Check for sign change along this edge
-                    // The edge connects two corners that differ only in the axis bit
-                    // Use the first cell's corner values
-                    let first_leaf = &leaves[cell_indices[0]];
-                    // The relevant edge for this cell: parallel to `axis`,
-                    // at the max corner in both non-axis dimensions
-                    // corner c0: axis bit = 0, a1 bit = 1, a2 bit = 1
-                    // corner c1: axis bit = 1, a1 bit = 1, a2 bit = 1
-                    // (since we're at the meeting point of 4 cells, the edge is at the max of a1 and a2 for cell [0])
-                    let c0_bits = (1u8 << a1) | (1u8 << a2);
-                    let c1_bits = c0_bits | (1u8 << axis);
-                    let v0 = first_leaf.data.corner_values[c0_bits as usize] - iso_value;
-                    let v1 = first_leaf.data.corner_values[c1_bits as usize] - iso_value;
+            // Canonical edge: corners 0 and (1 << axis)
+            let (c0, c1) = CubicBounds::edge_corners(edge_idx);
+            let val0 = leaf.data.corner_values[c0 as usize] - iso_value;
+            let val1 = leaf.data.corner_values[c1 as usize] - iso_value;
+            if (val0 < 0.0) == (val1 < 0.0) { continue; }
 
-                    if (v0 < 0.0) == (v1 < 0.0) {
-                        continue; // no sign change
-                    }
+            // Check boundary: neighbors at -1 in a1 and a2 must exist
+            if cell_coords[a1] == 0 || cell_coords[a2] == 0 { continue; }
 
-                    // Get vertex indices
-                    let verts: Vec<usize> = cell_indices.iter().filter_map(|&ci| leaf_vertex[ci]).collect();
-                    if verts.len() != 4 { continue; }
+            // Find 3 neighbor cells
+            let mut n_a1_coords = cell_coords;
+            n_a1_coords[a1] -= 1;
+            let mut n_a2_coords = cell_coords;
+            n_a2_coords[a2] -= 1;
+            let mut n_both_coords = cell_coords;
+            n_both_coords[a1] -= 1;
+            n_both_coords[a2] -= 1;
 
-                    // Winding order based on sign of v0
-                    // If v0 < 0 (inside), gradient points outward; winding should match
-                    let flip = v0 >= 0.0;
+            let Some(&ni_a1) = cell_map.get(&CellKey(n_a1_coords[0], n_a1_coords[1], n_a1_coords[2], d)) else { continue; };
+            let Some(&ni_a2) = cell_map.get(&CellKey(n_a2_coords[0], n_a2_coords[1], n_a2_coords[2], d)) else { continue; };
+            let Some(&ni_both) = cell_map.get(&CellKey(n_both_coords[0], n_both_coords[1], n_both_coords[2], d)) else { continue; };
 
-                    // Order the quad vertices consistently
-                    // The 4 cells are at: (0,0), (-1,0), (0,-1), (-1,-1) offsets
-                    // We want them in CCW order around the edge
-                    let ordered = if flip {
-                        [verts[0], verts[2], verts[3], verts[1]]
-                    } else {
-                        [verts[0], verts[1], verts[3], verts[2]]
-                    };
+            // All 4 cells must have QEF vertices
+            let Some(v_self) = leaf_vertex[leaf_idx] else { continue; };
+            let Some(v_a1) = leaf_vertex[ni_a1] else { continue; };
+            let Some(v_a2) = leaf_vertex[ni_a2] else { continue; };
+            let Some(v_both) = leaf_vertex[ni_both] else { continue; };
 
-                    faces.push([ordered[0] as i64, ordered[1] as i64, ordered[2] as i64]);
-                    faces.push([ordered[0] as i64, ordered[2] as i64, ordered[3] as i64]);
-                }
-            }
+            // Vertex array: [self=0, n_a1=1, n_a2=2, n_both=3]
+            let verts = [v_self, v_a1, v_a2, v_both];
+            let ccw = CCW_ORDER[axis];
+
+            // If val0 < 0 (inside) and val1 >= 0 (outside):
+            //   gradient points in +axis direction → quad normal should be +axis → use CCW
+            // Otherwise: use CW (reversed CCW)
+            let quad = if val0 < 0.0 {
+                [verts[ccw[0]], verts[ccw[1]], verts[ccw[2]], verts[ccw[3]]]
+            } else {
+                [verts[ccw[3]], verts[ccw[2]], verts[ccw[1]], verts[ccw[0]]]
+            };
+
+            // Split quad into 2 triangles
+            faces.push([quad[0] as i64, quad[1] as i64, quad[2] as i64]);
+            faces.push([quad[0] as i64, quad[2] as i64, quad[3] as i64]);
         }
     }
 
@@ -256,14 +254,10 @@ fn collect_leaves_recursive(
 }
 
 fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [
-        a[0] + t * (b[0] - a[0]),
-        a[1] + t * (b[1] - a[1]),
-        a[2] + t * (b[2] - a[2]),
-    ]
+    [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])]
 }
 
 fn normalize3(v: [f64; 3]) -> [f64; 3] {
-    let len = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
-    if len > 1e-12 { [v[0]/len, v[1]/len, v[2]/len] } else { [0.0, 0.0, 1.0] }
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len > 1e-12 { [v[0] / len, v[1] / len, v[2] / len] } else { [0.0, 0.0, 1.0] }
 }
