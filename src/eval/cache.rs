@@ -33,6 +33,10 @@ impl EvalCache {
         self.entries.get(pos)
     }
 
+    pub fn get_mut(&mut self, pos: &GridPos) -> Option<&mut CachedEval> {
+        self.entries.get_mut(pos)
+    }
+
     pub fn insert(&mut self, pos: GridPos, eval: CachedEval) {
         self.entries.insert(pos, eval);
     }

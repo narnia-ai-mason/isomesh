@@ -117,15 +117,16 @@ class TestBuildUniformOctree:
         # They should produce different leaf counts (different surfaces)
         assert leaf_count_0 != leaf_count_05
 
-    def test_batch_eval_single_call(self):
-        """Verify the function is called exactly once for all corners."""
+    def test_batch_eval_minimal_calls(self):
+        """Function with gradients should be called once for corners."""
         call_count = 0
 
         def counting_sdf(pos):
             nonlocal call_count
             call_count += 1
             norms = np.linalg.norm(pos, axis=1)
-            return norms - 1.0, None
+            safe = np.where(norms > 1e-12, norms, 1.0)
+            return norms - 1.0, pos / safe[:, None]
 
         from isomesh._isomesh_rs import build_octree_uniform
         build_octree_uniform(counting_sdf, [-2, -2, -2], [2, 2, 2], 3)

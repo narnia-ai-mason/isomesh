@@ -42,9 +42,11 @@ pub fn extract_dc(
         return Ok(ExtractedMesh { vertices: Vec::new(), faces: Vec::new() });
     }
 
-    let mut cell_map: HashMap<CellKey, usize> = HashMap::with_capacity(leaves.len());
+    // All surface leaves are at max_depth (enforced by build_adaptive Phase 3).
+    // Simple lookup by (x, y, z) coordinates at max_depth.
+    let mut cell_map: HashMap<(u32, u32, u32), usize> = HashMap::with_capacity(leaves.len());
     for (i, leaf) in leaves.iter().enumerate() {
-        cell_map.insert(leaf.key, i);
+        cell_map.insert((leaf.key.0, leaf.key.1, leaf.key.2), i);
     }
 
     // Step 2: Find edge crossings via linear interpolation (no extra Python calls)
@@ -166,7 +168,6 @@ pub fn extract_dc(
     for (leaf_idx, leaf) in leaves.iter().enumerate() {
         if leaf_vertex[leaf_idx].is_none() { continue; }
 
-        let d = leaf.depth;
         let cell_coords = [leaf.key.0, leaf.key.1, leaf.key.2];
 
         for axis in 0..3usize {
@@ -184,51 +185,42 @@ pub fn extract_dc(
             let mut n_a2 = cell_coords; n_a2[a2] -= 1;
             let mut n_both = cell_coords; n_both[a1] -= 1; n_both[a2] -= 1;
 
-            let Some(&ni_a1) = cell_map.get(&CellKey(n_a1[0], n_a1[1], n_a1[2], d)) else { continue; };
-            let Some(&ni_a2) = cell_map.get(&CellKey(n_a2[0], n_a2[1], n_a2[2], d)) else { continue; };
-            let Some(&ni_both) = cell_map.get(&CellKey(n_both[0], n_both[1], n_both[2], d)) else { continue; };
+            let Some(&ni_a1) = cell_map.get(&(n_a1[0], n_a1[1], n_a1[2])) else { continue; };
+            let Some(&ni_a2) = cell_map.get(&(n_a2[0], n_a2[1], n_a2[2])) else { continue; };
+            let Some(&ni_both) = cell_map.get(&(n_both[0], n_both[1], n_both[2])) else { continue; };
 
-            let Some(v_self) = leaf_vertex[leaf_idx] else { continue; };
-            let Some(v_a1) = leaf_vertex[ni_a1] else { continue; };
-            let Some(v_a2) = leaf_vertex[ni_a2] else { continue; };
-            let Some(v_both) = leaf_vertex[ni_both] else { continue; };
+            let Some(v0) = leaf_vertex[leaf_idx] else { continue; };
+            let Some(v1) = leaf_vertex[ni_a1] else { continue; };
+            let Some(v2) = leaf_vertex[ni_a2] else { continue; };
+            let Some(v3) = leaf_vertex[ni_both] else { continue; };
 
-            let verts = [v_self, v_a1, v_a2, v_both];
-            let ccw = CCW_ORDER[axis];
+                    let verts = [v0, v1, v2, v3];
+                    let ccw = CCW_ORDER[axis];
 
-            let quad = if val0 < 0.0 {
-                [verts[ccw[0]], verts[ccw[1]], verts[ccw[2]], verts[ccw[3]]]
-            } else {
-                [verts[ccw[3]], verts[ccw[2]], verts[ccw[1]], verts[ccw[0]]]
-            };
+                    let quad = if val0 < 0.0 {
+                        [verts[ccw[0]], verts[ccw[1]], verts[ccw[2]], verts[ccw[3]]]
+                    } else {
+                        [verts[ccw[3]], verts[ccw[2]], verts[ccw[1]], verts[ccw[0]]]
+                    };
 
-            // Split quad along the diagonal that produces the flatter pair
-            // of triangles (smaller normal deviation between the two halves).
-            // This naturally follows feature boundaries: a diagonal that
-            // crosses a feature creates triangles with very different normals,
-            // while one that follows the boundary keeps normals consistent.
-            let [a, b, c, d] = quad;
-            let pa = vertices[a]; let pb = vertices[b];
-            let pc = vertices[c]; let pd = vertices[d];
+                    // Flatness-based diagonal: choose flatter split
+                    let [a, b, c, d] = quad;
+                    let pa = vertices[a]; let pb = vertices[b];
+                    let pc = vertices[c]; let pd = vertices[d];
+                    let n1_ac = tri_normal(pa, pb, pc);
+                    let n2_ac = tri_normal(pa, pc, pd);
+                    let dot_ac = n1_ac[0]*n2_ac[0] + n1_ac[1]*n2_ac[1] + n1_ac[2]*n2_ac[2];
+                    let n1_bd = tri_normal(pa, pb, pd);
+                    let n2_bd = tri_normal(pb, pc, pd);
+                    let dot_bd = n1_bd[0]*n2_bd[0] + n1_bd[1]*n2_bd[1] + n1_bd[2]*n2_bd[2];
 
-            // Diagonal a-c: triangles (a,b,c) and (a,c,d)
-            let n1_ac = tri_normal(pa, pb, pc);
-            let n2_ac = tri_normal(pa, pc, pd);
-            let dot_ac = n1_ac[0]*n2_ac[0] + n1_ac[1]*n2_ac[1] + n1_ac[2]*n2_ac[2];
-
-            // Diagonal b-d: triangles (a,b,d) and (b,c,d)
-            let n1_bd = tri_normal(pa, pb, pd);
-            let n2_bd = tri_normal(pb, pc, pd);
-            let dot_bd = n1_bd[0]*n2_bd[0] + n1_bd[1]*n2_bd[1] + n1_bd[2]*n2_bd[2];
-
-            // Higher dot product = smaller angle between normals = flatter split
-            if dot_ac >= dot_bd {
-                faces.push([a as i64, b as i64, c as i64]);
-                faces.push([a as i64, c as i64, d as i64]);
-            } else {
-                faces.push([a as i64, b as i64, d as i64]);
-                faces.push([b as i64, c as i64, d as i64]);
-            }
+                    if dot_ac >= dot_bd {
+                        faces.push([a as i64, b as i64, c as i64]);
+                        faces.push([a as i64, c as i64, d as i64]);
+                    } else {
+                        faces.push([a as i64, b as i64, d as i64]);
+                        faces.push([b as i64, c as i64, d as i64]);
+                    }
         }
     }
 

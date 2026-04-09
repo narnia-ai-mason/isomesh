@@ -37,13 +37,11 @@ fn extract_mesh(
     angle_threshold_deg: f64,
     iso_value: f64,
 ) -> PyResult<(Py<PyArray2<f64>>, Py<PyArray2<i64>>)> {
-    let _ = angle_threshold_deg;
-
     let bb = BoundingBox::new(bbox_min, bbox_max);
     let (octree, _total_evals) = build::build_adaptive(
         py, &eval_fn, bb,
         min_depth as u8, max_depth as u8,
-        iso_value,
+        iso_value, angle_threshold_deg,
     )?;
 
     // Run Dual Contouring extraction
@@ -102,7 +100,7 @@ fn build_octree_adaptive(
     let (octree, total_evals) = build::build_adaptive(
         py, &eval_fn, bb,
         min_depth as u8, max_depth as u8,
-        iso_value,
+        iso_value, 30.0,
     )?;
     let stats = octree.stats();
     Ok((
