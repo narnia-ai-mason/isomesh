@@ -104,44 +104,32 @@
 **난이도: 매우 높음 (XL)**
 **예상 효과: 같은 품질에서 vertex 수 1/5~1/10, DC의 본질적 강점 실현**
 
-### 현재 상태
-- Adaptive refinement는 feature 근처 cell만 세분화
-- 하지만 DC extraction 전에 **모든 surface cell을 max_depth로 강제 확장**
-- → Surface 위에서는 사실상 uniform resolution
-- True adaptive의 이점 (mesh 경량화) 미실현
+### 현재 상태 (기본 구현 완료, depth boundary 개선 남음)
+- ✅ `src/octree/balance.rs`: 2:1 balance BFS ripple + surface propagation
+- ✅ `src/dc/extract.rs`: cross-depth neighbor lookup (same → coarser → finer)
+- ✅ depth-aware cell_map (`HashMap<(u32,u32,u32,u8), usize>`)
+- ✅ per-leaf cell_size for QEF sigma_p
+- ✅ Python API: `adaptive=True` flag in `isomesh.extract()`
+- ✅ 검증됨: sphere d3-5 77% vertex 감소, sphere d3-6 94% vertex 감소, manifold/watertight
 
-### 구현 방향
+### 알려진 한계: Depth Boundary Gaps
+- Surface cell이 collapsed Empty cell (tree pruning으로 인해 낮은 depth에 존재)과 인접할 때 gap 발생
+- 이는 adaptive와 non-adaptive 빌드 모두에 공통된 기존 한계
+- Smooth shape (sphere, torus)에서는 문제 없음
+- Sharp feature shape (box) 또는 좁은 depth 범위 (d4-5)에서 발생
 
-#### Phase 1: 2:1 Balance
-- `src/octree/balance.rs`
-- BFS ripple propagation: 인접 cell depth 차이 ≤ 1 보장
-- 새 cell의 corner 값 batch evaluation
-- Sundar et al. 2008 참조
+### 남은 개선 방향
 
-#### Phase 2: T-junction Stitching
-- Coarse face ↔ fine face 4개의 경계 처리
-- 2:1 balance 전제: coarse face 하나 = fine face 4개 (단일 수준 차이)
-- Coarse cell의 edge가 fine cell 2개의 edge와 겹침
-- 핵심: fine cell의 canonical edge iteration이 coarse cell의 vertex를 올바르게 참조
-
-#### Phase 3: Cross-depth Quad Generation
-- Per-leaf canonical edge 방식 유지
-- Neighbor lookup: 같은 depth에서 못 찾으면 ±1 depth 탐색
-- Coarse cell 1개와 fine cell 여러 개가 공유하는 edge에서 fan 형태 quad 생성
-- **Manifold/watertight 검증이 가장 어려운 부분**
+#### Depth Boundary Completion
+- Surface edge를 공유하는 4개 cell이 모두 surface cell이 되도록 보장
+- 접근 1: Balance에서 edge-adjacent (26-neighborhood) propagation 추가
+- 접근 2: DC extraction 전에 surface edge 완전성 검증 pass 추가
+- 접근 3: Kazhdan et al. 2007의 unconstrained extraction 방식 적용
 
 ### 핵심 참조
 - Kazhdan et al. "Unconstrained Isosurface Extraction on Arbitrary Octrees." SGP 2007.
-  — 2:1 balance 없이도 watertight 보장하는 방법 (더 복잡하지만 더 유연)
   [PDF](https://hhoppe.com/unconstrainediso.pdf)
-- Ju. "Intersection-free Contouring on An Octree Grid." 2006.
 - `mkeeter/fidget`: adaptive MDC 구현의 실전 참조
-
-### 난관
-- T-junction에서 crack-free 보장이 핵심 난관
-- Manifold/watertight 유지가 depth boundary에서 매우 어려움
-- 2:1 balance cascade로 cell 수 증가 (~10-30%)
-- **권장: MDC (항목 3)를 먼저 구현한 후 진행** — MDC의 multi-vertex-per-cell이 T-junction 처리를 단순화
 
 ---
 
@@ -150,8 +138,8 @@
 ```
 1. ✅ Rayon 병렬화 (S)           — 완료
 2. ✅ Probabilistic Quadrics (M) — 완료
-3. 🔶 MDC (L)                   — Phase 1 완료, Phase 2 (Manifold Criterion) 남음
-4. True Adaptive (XL)            — MDC 완성 + 2:1 balance + T-junction, 최종 목표
+3. ✅ MDC (L)                   — Phase 1 (Component Analysis) 완료
+4. 🔶 True Adaptive (XL)        — 기본 구현 완료, depth boundary gap 개선 남음
 ```
 
-항목 3과 4는 순서가 중요: MDC 없이 True Adaptive를 하면 T-junction에서 non-manifold 문제가 더 심해짐.
+Smooth shape에서 true adaptive 동작 확인 (sphere 77-94% vertex 감소). Sharp feature shape에서의 depth boundary gap은 향후 개선 과제.
