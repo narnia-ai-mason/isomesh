@@ -143,6 +143,76 @@ Adaptive mode concentrates resolution where needed:
 
 For smooth shapes like sphere, adaptive refinement skips unnecessary subdivision, reducing vertex count by 16x with comparable accuracy.
 
+## Usage with Neural SDF Models
+
+isomesh is designed for extracting meshes from SDF-based 3D generative models (e.g., DeepSDF, SDF-Diffusion) trained on mechanical parts like [SimJEB](https://simjeb.github.io/).
+
+### Recommended Configuration
+
+```python
+import isomesh
+import numpy as np
+import torch
+
+def make_sdf_func(model, device='cuda'):
+    """Wrap a neural SDF model for isomesh.
+
+    Always provide autodiff gradients -- finite difference gradients
+    are unreliable on neural SDFs.
+    """
+    @torch.no_grad()
+    def func(points: np.ndarray):
+        pts = torch.from_numpy(points).float().to(device)
+        pts.requires_grad_(True)
+
+        with torch.enable_grad():
+            values = model(pts)            # (N,)
+            grads = torch.autograd.grad(
+                values.sum(), pts, create_graph=False
+            )[0]                           # (N, 3)
+
+        return values.cpu().numpy(), grads.cpu().numpy()
+    return func
+
+vertices, faces = isomesh.extract(
+    make_sdf_func(model),
+    bbox_min=(-1.0, -1.0, -1.0),
+    bbox_max=(1.0, 1.0, 1.0),
+    min_depth=4,            # 16³ base grid
+    max_depth=7,            # 128³ effective resolution
+    adaptive=True,          # essential for mechanical parts
+    angle_threshold=30.0,   # detects 90° edges reliably
+    iso_value=0.0,
+)
+```
+
+### Why These Settings
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `adaptive` | `True` | Mechanical parts have large flat surfaces + sharp edges/holes. Adaptive refinement concentrates resolution at feature boundaries, keeping flat regions coarse. |
+| `min_depth` | `4` | 16³ = 4,096 initial corners -- a good first GPU batch. Lower risks missing thin features at the base grid; higher diminishes the benefit of adaptive refinement. |
+| `max_depth` | `7` | 128³ effective resolution captures fillets, hole edges, and fine details. |
+| `angle_threshold` | `30.0` | Mechanical edges are typically 90°, well above this threshold. Lowering it risks false-positive refinement from noisy neural gradients on flat surfaces. |
+
+### Quality Presets
+
+```python
+# Batch generation (speed-oriented, hundreds of shapes)
+min_depth=4, max_depth=7, adaptive=True
+
+# Single shape, final output (quality-oriented)
+min_depth=5, max_depth=8, adaptive=True
+```
+
+### Tips
+
+- **Always provide autodiff gradients.** Neural SDF + finite differences = poor accuracy. The wrapper above uses `torch.autograd.grad` to get exact gradients while keeping the outer scope in `no_grad` mode.
+- **Don't lower `angle_threshold` below 25°.** Neural gradients are noisier than analytic ones. A lower threshold causes over-refinement on surfaces that are actually flat.
+- **Thin features are handled automatically.** The Lipschitz guard detects thin walls even in cells without sign changes.
+- **Output is manifold and watertight.** Manifold Dual Contouring guarantees this -- no post-processing needed for downstream simulation or 3D printing.
+- **QEF preserves sharp edges exactly.** Unlike Marching Cubes, which places vertices on grid edges (chamfering corners), QEF vertex placement captures true edge and corner geometry.
+
 ## API Reference
 
 ```python
