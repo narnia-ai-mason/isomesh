@@ -76,18 +76,18 @@ def f(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
 
 ## Dual Contouring vs Marching Cubes
 
-Comprehensive comparison across 8 benchmark shapes using isomesh (Dual Contouring) and PyMCubes (Marching Cubes) at equivalent resolution (depth 6 = 64 cells/axis).
+Comprehensive comparison across 9 benchmark shapes using isomesh (Dual Contouring) and PyMCubes (Marching Cubes) at equivalent resolution (depth 6 = 64 cells/axis).
 
 ### Summary
 
 | Metric | MC (res=65) | DC Uniform (d=6) | DC Adaptive (4->6) | DC Adaptive (4->7) |
 |--------|:-----------:|:-----------------:|:-------------------:|:-------------------:|
-| Manifold | 8/8 | 8/8 | 8/8 | 8/8 |
-| Watertight | 8/8 | 8/8 | 8/8 | 8/8 |
-| Total vertices | 58,974 | 58,564 | 51,228 | 181,732 |
-| Total time | 0.39s | 9.10s | 6.01s | 21.26s |
-| Avg SDF error | 3.18e-04 | 6.69e-05 | 2.63e-03 | 3.34e-05 |
-| Avg min angle | 35.5 | 41.3 | 41.0 | 41.5 |
+| Manifold | 9/9 | 9/9 | 9/9 | 9/9 |
+| Watertight | 9/9 | 9/9 | 9/9 | 9/9 |
+| Total vertices | 68,832 | 68,412 | 60,348 | 221,280 |
+| Total time | 0.39s | 3.57s | 2.86s | 6.40s |
+| Avg SDF error | 2.95e-04 | 6.27e-05 | 7.25e-05 | 3.07e-05 |
+| Avg min angle | 35.0 | 40.7 | 40.6 | 41.0 |
 
 ### Surface Accuracy
 
@@ -118,6 +118,7 @@ DC consistently produces better-shaped triangles (higher minimum angle = less de
 DC (Dual Contouring) preserves sharp edges and corners via QEF vertex placement. MC (Marching Cubes) rounds them by linear interpolation.
 
 ![Box comparison](docs/images/comparison_box.png)
+![Rotated box comparison](docs/images/comparison_rotated_box.png)
 ![Chamfered sphere comparison](docs/images/comparison_chamfered_sphere.png)
 ![Mechanical part comparison](docs/images/comparison_mechanical_part.png)
 
@@ -186,12 +187,12 @@ pytest tests/ -v
 
 ## Benchmarks
 
-The benchmark suite compares isomesh against PyMCubes across 8 shapes in 4 categories:
+The benchmark suite compares isomesh against PyMCubes across 9 shapes in 4 categories:
 
 | Category | Shapes | What it tests |
 |----------|--------|---------------|
 | Basic | Sphere, Torus | Smooth surfaces, analytic ground truth |
-| Sharp features | Box, Chamfered sphere, Cylinder, Mechanical part | Sharp edges, corners, CSG operations |
+| Sharp features | Box, Rotated box, Chamfered sphere, Cylinder, Mechanical part | Sharp edges, corners, non-axis-aligned edges, CSG operations |
 | Thin features | Hemisphere shell (wall=0.08) | Thin walls, open boundaries |
 | Complex geometry | SimJEB 148 (mesh-based SDF) | Real CAD parts, complex topology |
 

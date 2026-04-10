@@ -93,6 +93,26 @@ def sdf_box(pos, half=None):
     return np.linalg.norm(qm, axis=1) + np.minimum(np.max(q, axis=1), 0.0), None
 
 
+def _rotation_matrix(axis, angle):
+    """Rodrigues' rotation: axis must be unit vector, angle in radians."""
+    ax = np.asarray(axis, dtype=np.float64)
+    ax = ax / np.linalg.norm(ax)
+    c, s = np.cos(angle), np.sin(angle)
+    K = np.array([[0, -ax[2], ax[1]],
+                  [ax[2], 0, -ax[0]],
+                  [-ax[1], ax[0], 0]])
+    return np.eye(3) * c + (1 - c) * np.outer(ax, ax) + s * K
+
+
+def sdf_rotated_box(pos, half=None, axis=None, angle=np.pi / 4):
+    """Box rotated around an arbitrary axis — all edges become non-axis-aligned."""
+    if axis is None:
+        axis = np.array([1.0, 1.0, 1.0])
+    R_inv = _rotation_matrix(axis, -angle)
+    local_pos = pos @ R_inv.T
+    return sdf_box(local_pos, half)
+
+
 def sdf_chamfered_sphere(pos, R=1.0, d=0.8):
     """Sphere with 6 axis-aligned plane cuts — curved faces + sharp circular edges."""
     ds, _ = sdf_sphere(pos, radius=R)
@@ -190,6 +210,12 @@ def build_shapes():
             "bbox": 1.5,
             "category": "sharp",
             "desc": "Unit box",
+        },
+        "rotated_box": {
+            "func": sdf_rotated_box,
+            "bbox": 2.0,
+            "category": "sharp",
+            "desc": "Box rotated 45° around (1,1,1) axis",
         },
         "chamfered_sphere": {
             "func": sdf_chamfered_sphere,
