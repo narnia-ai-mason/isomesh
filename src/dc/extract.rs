@@ -442,7 +442,7 @@ fn collect_leaves_recursive(
     result: &mut Vec<LeafInfo>,
 ) {
     match cell {
-        Cell::Leaf(data) if data.has_sign_change() => {
+        Cell::Leaf(data) if data.has_sign_change() && depth >= octree.min_depth => {
             result.push(LeafInfo {
                 data: data.clone(), bounds: *bounds, depth,
                 key: CellKey(cx, cy, cz, depth),

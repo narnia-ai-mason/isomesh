@@ -20,6 +20,7 @@ pub fn enforce_balance_2to1(
     octree: &mut Octree,
     cache: &mut EvalCache,
 ) -> PyResult<u64> {
+    let min_depth = octree.min_depth;
     let max_depth = octree.max_depth;
     let cell_size_at_max = octree.bounds.size / (1u32 << max_depth) as f64;
     let mut total_evals = 0u64;
@@ -55,7 +56,9 @@ pub fn enforce_balance_2to1(
                     && actual_depth < depth
                     && !matches!(neighbor_cell, Cell::Leaf(d) if d.has_sign_change());
 
-                if needs_balance || needs_surface_prop {
+                if (needs_balance || needs_surface_prop) && actual_depth >= min_depth {
+                    // Only subdivide cells at or above min_depth.
+                    // Cells below min_depth are collapsed tree nodes; leave them.
                     let scale = 1u32 << (depth - actual_depth);
                     let coarse_cx = nx / scale;
                     let coarse_cy = ny / scale;
