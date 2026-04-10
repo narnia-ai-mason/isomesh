@@ -268,26 +268,26 @@ def build_shapes():
 
 METHODS = {
     "pymcubes": {
-        "label": "MC (res=65)",
+        "label": "MC (res = 65)",
         "type": "mc",
         "mc_res": 65,
     },
     "uniform": {
-        "label": "DC Uniform (d=6)",
+        "label": "DC Uniform (d = 6)",
         "type": "isomesh",
         "min_depth": 6,
         "max_depth": 6,
         "adaptive": False,
     },
     "adaptive": {
-        "label": "DC Adaptive (4->6)",
+        "label": "DC Adaptive (4 to 6)",
         "type": "isomesh",
         "min_depth": 4,
         "max_depth": 6,
         "adaptive": True,
     },
     "adaptive_fine": {
-        "label": "DC Adaptive (4->7)",
+        "label": "DC Adaptive (4 to 7)",
         "type": "isomesh",
         "min_depth": 4,
         "max_depth": 7,
