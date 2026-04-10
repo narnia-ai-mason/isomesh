@@ -136,15 +136,15 @@ def sdf_cylinder(pos, radius=0.5, half_height=1.0):
 
 
 def sdf_mechanical_part(pos):
-    """Box ∪ through-rod − 4 cylindrical holes. Typical mechanical part."""
+    """Box with two large through-holes in perpendicular directions."""
     d_box, _ = sdf_box(pos, np.array([0.4, 0.4, 0.4]))
-    d_rod = _sdf_capped_cylinder(pos, radius=0.2, half_height=1.0, axis=0)
-    d_union = np.minimum(d_box, d_rod)
-    for ox, oy in [(0.18, 0.18), (0.18, -0.18), (-0.18, 0.18), (-0.18, -0.18)]:
-        shifted = pos - np.array([ox, oy, 0.0])
-        d_hole = _sdf_capped_cylinder(shifted, radius=0.1, half_height=0.5, axis=2)
-        d_union = np.maximum(d_union, -d_hole)
-    return d_union, None
+    # Through-hole along X-axis
+    d_hole_x = _sdf_capped_cylinder(pos, radius=0.2, half_height=1.0, axis=0)
+    # Through-hole along Y-axis
+    d_hole_y = _sdf_capped_cylinder(pos, radius=0.2, half_height=1.0, axis=1)
+    d_result = np.maximum(d_box, -d_hole_x)
+    d_result = np.maximum(d_result, -d_hole_y)
+    return d_result, None
 
 
 def sdf_thin_shell_hemi(pos, R=1.0, wall=0.08):
