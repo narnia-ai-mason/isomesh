@@ -27,16 +27,19 @@ struct LeafInfo {
 ///
 /// Each leaf cell may produce multiple vertices (one per connected component
 /// of inside corners), preventing non-manifold "bowtie" vertices that occur
-/// in basic DC. Edge crossings are found via linear interpolation from cached
-/// corner values (zero extra Python calls). Normals are obtained from the
+/// in basic DC. Edge crossings are refined via bisection (8 iterations) for
+/// accurate placement on curved features. Normals are obtained from the
 /// user function's gradient output, or estimated via finite differences if
-/// not provided (one extra Python call).
+/// not provided. Vertices are projected onto the isosurface via iterative
+/// Newton steps.
 pub fn extract_dc(
     py: Python<'_>,
     func: &PyObject,
     octree: &Octree,
+    angle_threshold_deg: f64,
 ) -> PyResult<ExtractedMesh> {
     let iso_value = octree.iso_value;
+    let sharp_cos = (angle_threshold_deg * std::f64::consts::PI / 180.0).cos();
 
     // Step 1: Collect all leaf cells with sign changes
     let mut leaves: Vec<LeafInfo> = Vec::new();
@@ -65,10 +68,20 @@ pub fn extract_dc(
         total_components += lc.num_components as usize;
     }
 
-    // Step 2: Find edge crossings via linear interpolation (no extra Python calls)
-    // and collect crossing points for normal estimation.
-    // MDC: each crossing is tagged with its component ID.
-    let edge_results: Vec<Vec<([f64; 3], (usize, u8, u8))>> = leaves
+    // Step 2: Find sign-change edges and refine crossings via bisection.
+    // Bisection gives ~1/256 cell accuracy (8 iterations), essential for
+    // curved sharp edges (cylinders, chamfers) where linear interpolation
+    // from corner values introduces visible jaggedness.
+    struct SignChangeEdge {
+        p0: [f64; 3],
+        p1: [f64; 3],
+        v0: f64,
+        leaf_idx: usize,
+        edge: u8,
+        comp_id: u8,
+    }
+
+    let edge_chunks: Vec<Vec<SignChangeEdge>> = leaves
         .par_iter()
         .enumerate()
         .map(|(idx, leaf)| {
@@ -79,26 +92,56 @@ pub fn extract_dc(
                 let v0 = leaf.data.corner_values[c0 as usize] - iso_value;
                 let v1 = leaf.data.corner_values[c1 as usize] - iso_value;
                 if (v0 < 0.0) != (v1 < 0.0) {
-                    let dv = v1 - v0;
-                    let t = if dv.abs() > 1e-15 { (-v0 / dv).clamp(0.001, 0.999) } else { 0.5 };
                     let p0 = leaf.bounds.corner(c0);
                     let p1 = leaf.bounds.corner(c1);
                     let comp_id = edge_component(components, leaf.data.corner_mask, edge);
-                    local.push((lerp3(p0, p1, t), (idx, edge, comp_id)));
+                    local.push(SignChangeEdge { p0, p1, v0, leaf_idx: idx, edge, comp_id });
                 }
             }
             local
         })
         .collect();
 
-    let mut crossing_points: Vec<[f64; 3]> = Vec::new();
-    let mut edge_leaf_map: Vec<(usize, u8, u8)> = Vec::new(); // (leaf_idx, edge, component_id)
-    for chunk in &edge_results {
-        for &(pt, mapping) in chunk {
-            crossing_points.push(pt);
-            edge_leaf_map.push(mapping);
+    let mut all_edges: Vec<SignChangeEdge> = Vec::new();
+    for chunk in edge_chunks {
+        all_edges.extend(chunk);
+    }
+    let num_crossings = all_edges.len();
+
+    // Bisection refinement: 8 batched iterations, one Python call each.
+    let mut lo_t = vec![0.0f64; num_crossings];
+    let mut hi_t = vec![1.0f64; num_crossings];
+    let mut lo_val: Vec<f64> = all_edges.iter().map(|e| e.v0).collect();
+
+    for _ in 0..8 {
+        if num_crossings == 0 { break; }
+        let mid_points: Vec<[f64; 3]> = (0..num_crossings).map(|i| {
+            let t = (lo_t[i] + hi_t[i]) * 0.5;
+            lerp3(all_edges[i].p0, all_edges[i].p1, t)
+        }).collect();
+
+        let result = bridge::batch_evaluate(py, func, &mid_points)?;
+
+        for i in 0..num_crossings {
+            let mid_val = result.values[i] - iso_value;
+            let mid_t = (lo_t[i] + hi_t[i]) * 0.5;
+            if (mid_val < 0.0) == (lo_val[i] < 0.0) {
+                lo_t[i] = mid_t;
+                lo_val[i] = mid_val;
+            } else {
+                hi_t[i] = mid_t;
+            }
         }
     }
+
+    // Final refined crossing points
+    let crossing_points: Vec<[f64; 3]> = (0..num_crossings).map(|i| {
+        let t = (lo_t[i] + hi_t[i]) * 0.5;
+        lerp3(all_edges[i].p0, all_edges[i].p1, t)
+    }).collect();
+    let edge_leaf_map: Vec<(usize, u8, u8)> = all_edges.iter()
+        .map(|e| (e.leaf_idx, e.edge, e.comp_id))
+        .collect();
 
     // Step 3: Get normals at crossing points (single batch Python call)
     let normals = if !crossing_points.is_empty() {
@@ -127,12 +170,34 @@ pub fn extract_dc(
         qefs[qef_idx].add(crossing_points[i], normals[i], sigma_n, sigma_p);
     }
 
+    // Compute per-component sharpness: min pairwise dot product of normals.
+    // Components where normals diverge more than angle_threshold_deg are "sharp"
+    // and should not receive Newton projection (which degrades edge/corner placement).
+    let mut comp_normals: Vec<Vec<[f64; 3]>> = vec![Vec::new(); total_components];
+    for (i, &(leaf_idx, _edge, comp_id)) in edge_leaf_map.iter().enumerate() {
+        let qef_idx = component_offsets[leaf_idx] + comp_id as usize;
+        comp_normals[qef_idx].push(normals[i]);
+    }
+
+    let is_component_sharp: Vec<bool> = comp_normals.iter().map(|norms| {
+        if norms.len() < 2 { return false; }
+        for i in 0..norms.len() {
+            for j in (i+1)..norms.len() {
+                let d = norms[i][0]*norms[j][0] + norms[i][1]*norms[j][1] + norms[i][2]*norms[j][2];
+                if d < sharp_cos { return true; }
+            }
+        }
+        false
+    }).collect();
+
     // Pass 1 (parallel): solve QEF per component independently
     // Each component within a cell shares the same cell bounds.
     struct ComponentSolveInput {
         qef_idx: usize,
-        cell_min: [f64; 3],
+        cell_min: [f64; 3],     // original cell bounds (for Newton clamping)
         cell_max: [f64; 3],
+        qef_min: [f64; 3],      // expanded bounds (for QEF solve)
+        qef_max: [f64; 3],
     }
 
     let mut solve_inputs: Vec<ComponentSolveInput> = Vec::with_capacity(total_components);
@@ -140,11 +205,25 @@ pub fn extract_dc(
         let n = leaf_components[i].num_components as usize;
         let cell_min = leaf.bounds.corner(0);
         let cell_max = leaf.bounds.corner(7);
+        let leaf_cell_size = octree.bounds.size / (1u32 << leaf.depth) as f64;
+        let margin = 0.25 * leaf_cell_size;
         for c in 0..n {
+            let comp_idx = component_offsets[i] + c;
+            // Expand QEF clamping bounds only for sharp-feature components
+            // so they can reach the true edge/corner position.
+            // Smooth components keep exact cell bounds for best accuracy.
+            let (qef_min, qef_max) = if is_component_sharp[comp_idx] {
+                ([cell_min[0] - margin, cell_min[1] - margin, cell_min[2] - margin],
+                 [cell_max[0] + margin, cell_max[1] + margin, cell_max[2] + margin])
+            } else {
+                (cell_min, cell_max)
+            };
             solve_inputs.push(ComponentSolveInput {
-                qef_idx: component_offsets[i] + c,
+                qef_idx: comp_idx,
                 cell_min,
                 cell_max,
+                qef_min,
+                qef_max,
             });
         }
     }
@@ -155,8 +234,10 @@ pub fn extract_dc(
             if qefs[input.qef_idx].count == 0 {
                 None
             } else {
-                let (pos, _) = qefs[input.qef_idx].solve(input.cell_min, input.cell_max);
-                Some((pos, input.cell_min, input.cell_max))
+                let (pos, _) = qefs[input.qef_idx].solve(input.qef_min, input.qef_max);
+                // Use QEF bounds (expanded for sharp) as Newton clamping bounds too,
+                // so sharp-feature vertices can stay at edge/corner positions.
+                Some((pos, input.qef_min, input.qef_max))
             }
         })
         .collect();
@@ -165,7 +246,6 @@ pub fn extract_dc(
     let mut vertices = Vec::with_capacity(total_components);
     let mut leaf_vertex_base: Vec<Option<usize>> = vec![None; leaves.len()];
     let mut vertex_cell_bounds: Vec<([f64; 3], [f64; 3])> = Vec::new();
-
     let mut sol_idx = 0;
     for (i, _leaf) in leaves.iter().enumerate() {
         let n = leaf_components[i].num_components as usize;
@@ -190,47 +270,39 @@ pub fn extract_dc(
         sol_idx += n;
     }
 
-    // Step 4b: Project vertices onto isosurface via Newton step.
-    if !vertices.is_empty() {
+    // Step 4b: Project vertices onto isosurface via iterative Newton steps.
+    // Sharp-feature vertices use expanded clamping bounds (from QEF solve)
+    // so they can stay at edge/corner positions after projection.
+    for _newton in 0..3 {
+        if vertices.is_empty() { break; }
         let proj_result = bridge::batch_evaluate(py, func, &vertices)?;
-        if let Some(ref grads) = proj_result.gradients {
-            vertices.par_iter_mut().enumerate().for_each(|(i, vert)| {
-                let f_val = proj_result.values[i] - iso_value;
-                let g = grads[i];
-                let g_sq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
-                if g_sq > 1e-20 {
-                    let step = f_val / g_sq;
-                    vert[0] -= step * g[0];
-                    vert[1] -= step * g[1];
-                    vert[2] -= step * g[2];
-                    let (cmin, cmax) = vertex_cell_bounds[i];
-                    for d in 0..3 {
-                        vert[d] = vert[d].clamp(cmin[d], cmax[d]);
-                    }
-                }
-            });
+        let has_grads = proj_result.gradients.is_some();
+
+        let grads: Vec<[f64; 3]> = if let Some(g) = proj_result.gradients {
+            g
         } else {
-            // FD gradient for projection (use finest cell size for step)
             let cell_size = octree.bounds.size / (1u32 << octree.max_depth) as f64;
-            let proj_grads = bridge::estimate_gradients_fd(
-                py, func, &vertices, cell_size * 0.01
-            )?;
-            vertices.par_iter_mut().enumerate().for_each(|(i, vert)| {
-                let f_val = proj_result.values[i] - iso_value;
-                let g = proj_grads[i];
-                let g_sq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
-                if g_sq > 1e-20 {
-                    let step = f_val / g_sq;
-                    vert[0] -= step * g[0];
-                    vert[1] -= step * g[1];
-                    vert[2] -= step * g[2];
-                    let (cmin, cmax) = vertex_cell_bounds[i];
-                    for d in 0..3 {
-                        vert[d] = vert[d].clamp(cmin[d], cmax[d]);
-                    }
+            bridge::estimate_gradients_fd(py, func, &vertices, cell_size * 0.01)?
+        };
+        let values = proj_result.values;
+
+        vertices.par_iter_mut().enumerate().for_each(|(i, vert)| {
+            let f_val = values[i] - iso_value;
+            let g = grads[i];
+            let g_sq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
+            if g_sq > 1e-20 {
+                let step = f_val / g_sq;
+                vert[0] -= step * g[0];
+                vert[1] -= step * g[1];
+                vert[2] -= step * g[2];
+                let (cmin, cmax) = vertex_cell_bounds[i];
+                for d in 0..3 {
+                    vert[d] = vert[d].clamp(cmin[d], cmax[d]);
                 }
-            });
-        }
+            }
+        });
+
+        if !has_grads { break; } // FD is expensive; one iteration suffices
     }
 
     // Step 5: Generate quads from canonical edges (0, 4, 8)

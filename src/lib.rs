@@ -48,7 +48,7 @@ fn extract_mesh(
     )?;
 
     // Run Dual Contouring extraction
-    let mesh = extract::extract_dc(py, &eval_fn, &octree)?;
+    let mesh = extract::extract_dc(py, &eval_fn, &octree, angle_threshold_deg)?;
 
     let nv = mesh.vertices.len();
     let nf = mesh.faces.len();
