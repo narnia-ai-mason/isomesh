@@ -468,7 +468,7 @@ def _render_one(vertices, faces, color_rgb, renderer, elev=25, azim=-60):
 
     scene = pyrender.Scene(
         bg_color=[1.0, 1.0, 1.0, 1.0],
-        ambient_light=[0.2, 0.2, 0.2],
+        ambient_light=[0.3, 0.3, 0.3],
     )
     scene.add(pr_mesh)
 
@@ -483,19 +483,19 @@ def _render_one(vertices, faces, color_rgb, renderer, elev=25, azim=-60):
     # Key light — upper-left of camera
     key_p = _cam_pose(center, extent, elev + 30, azim - 40)
     scene.add(pyrender.DirectionalLight(
-        color=[1.0, 0.98, 0.95], intensity=4.5,
+        color=[1.0, 0.98, 0.95], intensity=2.5,
     ), pose=key_p)
 
     # Fill light — lower-right of camera, cooler
     fill_p = _cam_pose(center, extent, elev - 10, azim + 55)
     scene.add(pyrender.DirectionalLight(
-        color=[0.92, 0.95, 1.0], intensity=2.0,
+        color=[0.92, 0.95, 1.0], intensity=1.2,
     ), pose=fill_p)
 
     # Rim light — behind and above
     rim_p = _cam_pose(center, extent, elev + 50, azim + 160)
     scene.add(pyrender.DirectionalLight(
-        color=[1.0, 1.0, 1.0], intensity=1.5,
+        color=[1.0, 1.0, 1.0], intensity=0.8,
     ), pose=rim_p)
 
     color_img, _ = renderer.render(scene)
