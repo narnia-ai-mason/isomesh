@@ -188,6 +188,7 @@ fn ensure_edge_completeness(
         // For each surface leaf, check canonical edges
         let mut cells_to_subdivide: Vec<(u32, u32, u32, u8)> = Vec::new();
         let mut seen: HashSet<(u32, u32, u32, u8)> = HashSet::new();
+        let mut target_depths: std::collections::HashMap<(u32,u32,u32,u8), u8> = std::collections::HashMap::new();
 
         for &(cx, cy, cz, depth) in &surface_leaves {
             // Get corner values to check sign changes on ALL 12 edges
@@ -251,6 +252,9 @@ fn ensure_edge_completeness(
 
                     for (nx, ny, nz) in sharing {
                         if !find_surface_neighbor_same_depth(&leaf_set, nx, ny, nz, depth) {
+                            // Find the coarsest non-Branch cell containing this position.
+                            // Tag it with the TARGET depth so we subdivide all the way,
+                            // preventing intermediate-depth surface artifacts.
                             let (cell, actual_depth) = octree.cell_at(nx, ny, nz, depth);
                             if actual_depth < depth
                                 && !matches!(cell, Cell::Branch { .. })
@@ -258,7 +262,11 @@ fn ensure_edge_completeness(
                                 let s = 1u32 << (depth - actual_depth);
                                 let key = (nx / s, ny / s, nz / s, actual_depth);
                                 if seen.insert(key) {
-                                    cells_to_subdivide.push(key);
+                                    // Store (cell_coords, actual_depth) but also need
+                                    // target depth for deep subdivision
+                                    cells_to_subdivide.push((key.0, key.1, key.2, key.3));
+                                    // Also record target depth
+                                    target_depths.insert(key, depth);
                                 }
                             }
                         }
@@ -271,33 +279,22 @@ fn ensure_edge_completeness(
             break;
         }
 
-        // Evaluate and subdivide (same logic as balance)
+        // Collect ALL corners needed for deep subdivision (from current depth to target)
         let mut new_points: Vec<[f64; 3]> = Vec::new();
         let mut new_grid: Vec<GridPos> = Vec::new();
         let mut seen_grid: HashSet<GridPos> = HashSet::new();
 
         for &(cx, cy, cz, depth) in &cells_to_subdivide {
-            let cs = 1u32 << (max_depth - depth - 1);
+            let target = target_depths.get(&(cx, cy, cz, depth)).copied().unwrap_or(depth + 1);
             let gx = cx * (1u32 << (max_depth - depth));
             let gy = cy * (1u32 << (max_depth - depth));
             let gz = cz * (1u32 << (max_depth - depth));
-            for octant in 0..8u8 {
-                let ox = gx + if octant & 1 != 0 { cs } else { 0 };
-                let oy = gy + if octant & 2 != 0 { cs } else { 0 };
-                let oz = gz + if octant & 4 != 0 { cs } else { 0 };
-                for corner in 0..8u8 {
-                    let px = ox + if corner & 1 != 0 { cs } else { 0 };
-                    let py = oy + if corner & 2 != 0 { cs } else { 0 };
-                    let pz = oz + if corner & 4 != 0 { cs } else { 0 };
-                    let gp = GridPos::new(px, py, pz);
-                    if !cache.contains(&gp) && seen_grid.insert(gp) {
-                        new_grid.push(gp);
-                        new_points.push(cache::grid_to_world(
-                            &gp, &octree.bounds.origin, cell_size_at_max,
-                        ));
-                    }
-                }
-            }
+            // Collect corners for ALL levels from depth+1 to target
+            collect_deep_corners(
+                gx, gy, gz, depth, target, max_depth,
+                cache, &octree.bounds.origin, cell_size_at_max,
+                &mut new_grid, &mut new_points, &mut seen_grid,
+            );
         }
 
         if !new_points.is_empty() {
@@ -319,11 +316,86 @@ fn ensure_edge_completeness(
             let gx = cx * (1u32 << (max_depth - depth));
             let gy = cy * (1u32 << (max_depth - depth));
             let gz = cz * (1u32 << (max_depth - depth));
-            subdivide_cell_for_balance(octree, cache, gx, gy, gz, depth, max_depth);
+            let target = target_depths.get(&(cx, cy, cz, depth)).copied().unwrap_or(depth + 1);
+            subdivide_deep(octree, cache, gx, gy, gz, depth, target, max_depth);
         }
     }
 
     Ok(total_evals)
+}
+
+/// Collect all corner grid positions needed to subdivide from current_depth to target_depth.
+fn collect_deep_corners(
+    gx: u32, gy: u32, gz: u32,
+    current_depth: u8, target_depth: u8, max_depth: u8,
+    cache: &EvalCache, origin: &[f64; 3], cell_size_at_max: f64,
+    new_grid: &mut Vec<GridPos>, new_points: &mut Vec<[f64; 3]>,
+    seen: &mut HashSet<GridPos>,
+) {
+    if current_depth >= target_depth || current_depth >= max_depth {
+        return;
+    }
+    let cs = 1u32 << (max_depth - current_depth - 1);
+    for octant in 0..8u8 {
+        let ox = gx + if octant & 1 != 0 { cs } else { 0 };
+        let oy = gy + if octant & 2 != 0 { cs } else { 0 };
+        let oz = gz + if octant & 4 != 0 { cs } else { 0 };
+        for corner in 0..8u8 {
+            let px = ox + if corner & 1 != 0 { cs } else { 0 };
+            let py = oy + if corner & 2 != 0 { cs } else { 0 };
+            let pz = oz + if corner & 4 != 0 { cs } else { 0 };
+            let gp = GridPos::new(px, py, pz);
+            if !cache.contains(&gp) && seen.insert(gp) {
+                new_grid.push(gp);
+                new_points.push(cache::grid_to_world(&gp, origin, cell_size_at_max));
+            }
+        }
+        // Recurse for deeper levels
+        if current_depth + 1 < target_depth {
+            collect_deep_corners(
+                ox, oy, oz, current_depth + 1, target_depth, max_depth,
+                cache, origin, cell_size_at_max, new_grid, new_points, seen,
+            );
+        }
+    }
+}
+
+/// Recursively subdivide a cell from `current_depth` down to `target_depth`.
+/// All intermediate cells become Branches; only the leaves at target_depth are kept.
+fn subdivide_deep(
+    octree: &mut Octree,
+    cache: &EvalCache,
+    grid_x: u32, grid_y: u32, grid_z: u32,
+    current_depth: u8, target_depth: u8, max_depth: u8,
+) {
+    if current_depth >= target_depth || current_depth >= max_depth {
+        return;
+    }
+
+    // First subdivide one level
+    subdivide_cell_for_balance(octree, cache, grid_x, grid_y, grid_z, current_depth, max_depth);
+
+    // If we need to go deeper, subdivide each child that needs it
+    if current_depth + 1 < target_depth {
+        let child_scale = 1u32 << (max_depth - current_depth - 1);
+        for octant in 0..8u8 {
+            let cx = grid_x + if octant & 1 != 0 { child_scale } else { 0 };
+            let cy = grid_y + if octant & 2 != 0 { child_scale } else { 0 };
+            let cz = grid_z + if octant & 4 != 0 { child_scale } else { 0 };
+
+            // Check if child is a leaf (not already a Branch)
+            let child_depth = current_depth + 1;
+            let (cell, actual) = octree.cell_at(
+                cx / (1u32 << (max_depth - child_depth)),
+                cy / (1u32 << (max_depth - child_depth)),
+                cz / (1u32 << (max_depth - child_depth)),
+                child_depth,
+            );
+            if actual == child_depth && !matches!(cell, Cell::Branch { .. }) {
+                subdivide_deep(octree, cache, cx, cy, cz, child_depth, target_depth, max_depth);
+            }
+        }
+    }
 }
 
 /// Check if a surface leaf exists at (nx, ny, nz) at EXACTLY the given depth.

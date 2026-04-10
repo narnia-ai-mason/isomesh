@@ -14,7 +14,7 @@
 | torus | adaptive_3_7 | 4208 | 8416 | ✅ | ✅ | torus_adaptive_3_7.stl |
 | box | uniform_d5 | 1352 | 2700 | ✅ | ✅ | box_uniform_d5.stl |
 | box | uniform_d6 | 5768 | 11532 | ✅ | ✅ | box_uniform_d6.stl |
-| box | adaptive_3_5 | 1360 | 2712 | ✅ | ✅ | box_adaptive_3_5.stl |
+| box | adaptive_3_5 | 1352 | 2700 | ✅ | ✅ | box_adaptive_3_5.stl |
 | box | adaptive_3_6 | 5768 | 11532 | ✅ | ✅ | box_adaptive_3_6.stl |
 | box | adaptive_3_7 | 23816 | 47628 | ✅ | ✅ | box_adaptive_3_7.stl |
 | csg_cross | uniform_d5 | 152 | 300 | ✅ | ✅ | csg_cross_uniform_d5.stl |

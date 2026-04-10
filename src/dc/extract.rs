@@ -358,7 +358,98 @@ pub fn extract_dc(
         .flatten()
         .collect();
 
+    // Post-processing: remove small disconnected components (artifacts from
+    // intermediate-depth surface cells created during balance/edge completion).
+    let (vertices, faces) = remove_small_components(vertices, faces);
+
     Ok(ExtractedMesh { vertices, faces })
+}
+
+/// Remove connected components with fewer than `threshold` faces.
+/// These are artifacts from coarse intermediate cells created during balance.
+fn remove_small_components(
+    vertices: Vec<[f64; 3]>,
+    faces: Vec<[i64; 3]>,
+) -> (Vec<[f64; 3]>, Vec<[i64; 3]>) {
+    if faces.is_empty() {
+        return (vertices, faces);
+    }
+
+    let nv = vertices.len();
+    let nf = faces.len();
+
+    // Find connected components via union-find on vertices
+    let mut parent: Vec<usize> = (0..nv).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb { parent[rb] = ra; }
+    }
+
+    for face in &faces {
+        let a = face[0] as usize;
+        let b = face[1] as usize;
+        let c = face[2] as usize;
+        union(&mut parent, a, b);
+        union(&mut parent, a, c);
+    }
+
+    // Count faces per component
+    let mut comp_face_count: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for face in &faces {
+        let root = find(&mut parent, face[0] as usize);
+        *comp_face_count.entry(root).or_insert(0) += 1;
+    }
+
+    // Find the largest component
+    let largest_root = comp_face_count.iter()
+        .max_by_key(|(_, &count)| count)
+        .map(|(&root, _)| root)
+        .unwrap_or(0);
+
+    // Keep components that are at least 1% the size of the largest.
+    // This removes tiny artifacts while preserving genuine separate surfaces
+    // (e.g., two touching spheres).
+    let max_count = comp_face_count.values().copied().max().unwrap_or(0);
+    let threshold = (max_count / 100).max(4); // Remove components < 1% of largest, min 4 faces
+    let keep_faces: Vec<[i64; 3]> = faces.into_iter()
+        .filter(|face| {
+            let root = find(&mut parent, face[0] as usize);
+            comp_face_count[&root] >= threshold
+        })
+        .collect();
+
+    if keep_faces.len() == nf {
+        return (vertices, keep_faces); // No change needed
+    }
+
+    // Remap vertex indices
+    let mut used = vec![false; nv];
+    for face in &keep_faces {
+        used[face[0] as usize] = true;
+        used[face[1] as usize] = true;
+        used[face[2] as usize] = true;
+    }
+    let mut remap = vec![0usize; nv];
+    let mut new_vertices = Vec::new();
+    for (i, &u) in used.iter().enumerate() {
+        if u {
+            remap[i] = new_vertices.len();
+            new_vertices.push(vertices[i]);
+        }
+    }
+    let new_faces: Vec<[i64; 3]> = keep_faces.iter()
+        .map(|f| [remap[f[0] as usize] as i64, remap[f[1] as usize] as i64, remap[f[2] as usize] as i64])
+        .collect();
+
+    (new_vertices, new_faces)
 }
 
 /// Same-depth neighbor lookup for adaptive octrees.
@@ -409,7 +500,7 @@ fn collect_leaves_recursive(
     result: &mut Vec<LeafInfo>,
 ) {
     match cell {
-        Cell::Leaf(data) if data.has_sign_change() => {
+        Cell::Leaf(data) if data.has_sign_change() && depth >= octree.min_depth => {
             result.push(LeafInfo {
                 data: data.clone(), bounds: *bounds, depth,
                 key: CellKey(cx, cy, cz, depth),
