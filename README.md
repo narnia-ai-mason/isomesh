@@ -2,7 +2,7 @@
 
 Fast, robust isosurface extraction from arbitrary implicit functions using adaptive octree and Dual Contouring.
 
-![isomesh gallery](docs/images/gallery.png)
+![isomesh benchmark overview](docs/images/overview_grid.png)
 
 ## Features
 
@@ -76,57 +76,67 @@ def f(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
 
 ## Dual Contouring vs Marching Cubes
 
-### Sharp Feature Preservation
+Comprehensive comparison across 8 benchmark shapes using isomesh (Dual Contouring) and PyMCubes (Marching Cubes) at equivalent resolution (depth 6 = 64 cells/axis).
 
-At low resolution, the difference is stark. DC places vertices at geometric feature intersections via QEF, while MC rounds them by linear interpolation on edges.
+### Summary
 
-![Box low-res comparison](docs/images/box_lowres_vs.png)
-
-| Metric | isomesh (DC) | MC |
-|--------|:-----------:|:--:|
-| Box corner distance | **0.0000** | 0.0884 |
-| Box edge distance | **0.005** | 0.075 |
-
-### Visual Comparison
-
-| Shape | | |
-|-------|---|---|
-| **Chamfered Box** | ![](docs/images/chamfered_box_vs.png) | |
-| **CSG Cross** | ![](docs/images/csg_cross_vs.png) | |
-| **Torus** | ![](docs/images/torus_vs.png) | |
-| **Sphere** | ![](docs/images/sphere_vs.png) | |
+| Metric | MC (res=65) | DC Uniform (d=6) | DC Adaptive (4->6) | DC Adaptive (4->7) |
+|--------|:-----------:|:-----------------:|:-------------------:|:-------------------:|
+| Manifold | 8/8 | 8/8 | 8/8 | 8/8 |
+| Watertight | 8/8 | 8/8 | 8/8 | 8/8 |
+| Total vertices | 58,974 | 58,564 | 51,228 | 181,732 |
+| Total time | 0.39s | 9.10s | 6.01s | 21.26s |
+| Avg SDF error | 3.18e-04 | 6.69e-05 | 2.63e-03 | 3.34e-05 |
+| Avg min angle | 35.5 | 41.3 | 41.0 | 41.5 |
 
 ### Surface Accuracy
 
-Newton projection places all vertices exactly on the isosurface:
+Newton projection places DC vertices nearly exactly on the isosurface:
 
-| Metric (depth 7) | isomesh (DC) | MC |
-|-------------------|:-------:|:--:|
-| Sphere Hausdorff | **0.000000** | 0.000068 |
-| Chamfered box max \|SDF\| | **0.000000** | 0.000000 |
+| Shape | MC mean |SDF| | DC mean |SDF| | Improvement |
+|-------|:-------:|:-------:|:----------:|
+| sphere | 9.63e-05 | **4.57e-17** | ~10^12x |
+| thin_shell_hemi | 6.86e-05 | **8.29e-09** | ~8,000x |
+| chamfered_sphere | 2.58e-04 | **3.42e-05** | ~8x |
+| mechanical_part | 3.25e-04 | **5.65e-05** | ~6x |
+| simjeb_148 | 1.35e-03 | **3.39e-04** | ~4x |
 
-### Performance
+### Triangle Quality
 
-Adaptive refinement evaluates the function only near the surface and at feature boundaries:
+DC consistently produces better-shaped triangles (higher minimum angle = less degenerate):
 
-| Shape (depth 7 quality) | isomesh (adaptive) | MC (uniform) |
-|-------------------------|:------------------:|:------------------:|
-| Chamfered box | 0.145s | 0.115s |
-| Sphere | 0.066s | 0.057s |
+| Shape | MC min angle (avg) | DC min angle (avg) |
+|-------|:--:|:--:|
+| sphere | 31.6 | **45.2** |
+| thin_shell_hemi | 31.4 | **44.2** |
+| chamfered_sphere | 35.5 | **43.1** |
+| box | 44.1 | **44.5** |
+| mechanical_part | 40.3 | **41.0** |
 
-At equivalent resolution, speeds are comparable. isomesh's advantage is that adaptive refinement achieves depth-7 quality with depth-4 evaluation cost -- **26x faster** than uniform depth 7.
+### Sharp Feature Comparison
 
-### Mesh Quality
+DC (Dual Contouring) preserves sharp edges and corners via QEF vertex placement. MC (Marching Cubes) rounds them by linear interpolation.
 
-All closed shapes produce manifold, watertight meshes with consistent face winding:
+![Box comparison](docs/images/comparison_box.png)
+![Chamfered sphere comparison](docs/images/comparison_chamfered_sphere.png)
+![Mechanical part comparison](docs/images/comparison_mechanical_part.png)
 
-| Shape | Manifold | Watertight | Euler |
-|-------|:--------:|:----------:|:-----:|
-| Sphere | Y | Y | 2 |
-| Box | Y | Y | 2 |
-| Torus | Y | Y | 0 |
-| Chamfered box | Y | Y | 2 |
-| CSG cross | Y | Y | 2 |
+### Thin Feature & Complex Geometry
+
+![Thin shell comparison](docs/images/comparison_thin_shell_hemi.png)
+![SimJEB 148 comparison](docs/images/comparison_simjeb_148.png)
+
+### Adaptive Refinement
+
+Adaptive mode concentrates resolution where needed:
+
+| Shape | Adaptive (4->6) V | Uniform (d=6) V | Ratio |
+|-------|---:|---:|:----:|
+| sphere | 536 | 8,600 | **16x fewer** |
+| chamfered_sphere | 7,064 | 7,064 | 1x |
+| cylinder | 4,328 | 4,328 | 1x |
+
+For smooth shapes like sphere, adaptive refinement skips unnecessary subdivision, reducing vertex count by 16x with comparable accuracy.
 
 ## API Reference
 
@@ -141,6 +151,7 @@ isomesh.extract(
     angle_threshold=30.0,    # degrees -- feature detection sensitivity
     iso_value=0.0,           # isosurface level
     fd_step=1e-5,            # finite difference step (if gradients not provided)
+    adaptive=False,          # enable adaptive refinement
 ) -> (vertices, faces)
 ```
 
@@ -169,30 +180,29 @@ python/isomesh/             # Python API
 ## Testing
 
 ```bash
-# Run all tests
 maturin develop --release
 pytest tests/ -v
-
-# 80 tests: 16 Rust unit tests + 64 Python integration tests
-# Covers: sphere, box, torus, chamfered box, CSG, thin features,
-#         manifold/watertight validation, Hausdorff accuracy, API contracts
 ```
 
-## Benchmark Shapes
+## Benchmarks
 
-The benchmark suite includes 16 shapes across 5 categories:
+The benchmark suite compares isomesh against PyMCubes across 8 shapes in 4 categories:
 
-| Category | Shapes |
-|----------|--------|
-| Basic analytic | Sphere, Torus, Ellipsoid |
-| Sharp features | Box, CSG cross, CSG intersection, Chamfered box |
-| TPMS | Gyroid, Schwarz P, Schwarz D |
-| Complex topology | Genus-2, Tanglecube, Heart, Barth sextic |
-| Thin features | Thin plate, Thin shell |
+| Category | Shapes | What it tests |
+|----------|--------|---------------|
+| Basic | Sphere, Torus | Smooth surfaces, analytic ground truth |
+| Sharp features | Box, Chamfered sphere, Cylinder, Mechanical part | Sharp edges, corners, CSG operations |
+| Thin features | Hemisphere shell (wall=0.08) | Thin walls, open boundaries |
+| Complex geometry | SimJEB 148 (mesh-based SDF) | Real CAD parts, complex topology |
 
 ```bash
-python benchmarks/run_benchmark.py
-python benchmarks/render_readme_images.py
+# Full benchmark (all shapes, all methods, with rendering)
+uv run python benchmarks/run_benchmark.py
+
+# Selective
+uv run python benchmarks/run_benchmark.py --shapes sphere box chamfered_sphere
+uv run python benchmarks/run_benchmark.py --methods uniform adaptive
+uv run python benchmarks/run_benchmark.py --no-render --no-stl
 ```
 
 ## References
