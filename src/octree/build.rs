@@ -63,10 +63,14 @@ fn build_adaptive_inner(
     let mut total_evals = 0u64;
     let angle_threshold_cos = (angle_threshold_deg * std::f64::consts::PI / 180.0).cos();
 
-    // Phase 1: Evaluate all corners at min_depth
+    // Phase 1: Evaluate all corners at min_depth.
+    // IMPORTANT: All cache keys use max_depth grid coordinates to avoid
+    // collisions between depth levels (e.g., depth-4 GridPos(10,10,10)
+    // and depth-6 GridPos(10,10,10) refer to different world positions).
     let cells_per_axis = 1u32 << min_depth;
     let corners_per_axis = cells_per_axis + 1;
-    let cell_size_at_min = bounds.size / cells_per_axis as f64;
+    let cell_size_at_max = bounds.size / (1u32 << max_depth) as f64;
+    let grid_scale = 1u32 << (max_depth - min_depth); // scale min_depth coords to max_depth coords
 
     let mut cache = EvalCache::with_capacity((corners_per_axis as usize).pow(3));
     let mut points = Vec::new();
@@ -75,8 +79,8 @@ fn build_adaptive_inner(
     for z in 0..corners_per_axis {
         for y in 0..corners_per_axis {
             for x in 0..corners_per_axis {
-                let gp = GridPos::new(x, y, z);
-                let world = cache::grid_to_world(&gp, &bounds.origin, cell_size_at_min);
+                let gp = GridPos::new(x * grid_scale, y * grid_scale, z * grid_scale);
+                let world = cache::grid_to_world(&gp, &bounds.origin, cell_size_at_max);
                 grid_positions.push(gp);
                 points.push(world);
             }
@@ -91,7 +95,7 @@ fn build_adaptive_inner(
     populate_cache(&mut cache, &grid_positions, &result);
 
     if !has_gradients {
-        let fd_grads = bridge::estimate_gradients_fd(py, func, &points, cell_size_at_min * 0.01)?;
+        let fd_grads = bridge::estimate_gradients_fd(py, func, &points, cell_size_at_max * 0.01)?;
         total_evals += points.len() as u64 * 6; // 6 FD evaluations per point
         for (i, gp) in grid_positions.iter().enumerate() {
             if let Some(entry) = cache.get_mut(gp) {
@@ -100,11 +104,11 @@ fn build_adaptive_inner(
         }
     }
 
-    // Build uniform tree to min_depth
+    // Build uniform tree to min_depth (using max_depth grid coords for cache)
     let mut children_storage: Vec<[Cell; 8]> = Vec::new();
     let root = build_cell_recursive(
         &cache, &mut children_storage,
-        0, 0, 0, min_depth, 0, iso_value,
+        0, 0, 0, min_depth, 0, iso_value, max_depth,
     );
 
     let mut octree = Octree {
@@ -208,6 +212,7 @@ fn build_adaptive_inner(
             let gz = cz * scale;
             subdivide_leaf(&mut octree, &cache, gx, gy, gz, current_depth, max_depth, iso_value);
         }
+
     }
 
     // Phase 3: Either force uniform depth (legacy) or 2:1 balance (true adaptive).
@@ -562,15 +567,23 @@ fn build_cell_recursive(
     children_storage: &mut Vec<[Cell; 8]>,
     cell_x: u32, cell_y: u32, cell_z: u32,
     target_depth: u8, current_depth: u8,
-    iso_value: f64,
+    iso_value: f64, max_depth: u8,
 ) -> Cell {
     if current_depth == target_depth {
         let mut corner_values = [0.0f64; 8];
         let mut corner_grads = [[0.0f64; 3]; 8];
         let mut has_grads = true;
-        let scale = 1u32 << (target_depth - current_depth);
+        // Cache keys are in max_depth grid: each cell at target_depth spans
+        // (1 << (max_depth - target_depth)) units in the max_depth grid.
+        let cell_scale = 1u32 << (max_depth - current_depth);
+        let gx = cell_x * cell_scale;
+        let gy = cell_y * cell_scale;
+        let gz = cell_z * cell_scale;
         for c in 0..8u8 {
-            let gp = cache::corner_grid_pos(cell_x * scale, cell_y * scale, cell_z * scale, c);
+            let px = gx + if c & 1 != 0 { cell_scale } else { 0 };
+            let py = gy + if c & 2 != 0 { cell_scale } else { 0 };
+            let pz = gz + if c & 4 != 0 { cell_scale } else { 0 };
+            let gp = GridPos::new(px, py, pz);
             let eval = cache.get(&gp).expect("corner not in cache");
             corner_values[c as usize] = eval.value;
             match eval.gradient {
@@ -592,7 +605,7 @@ fn build_cell_recursive(
             let cz = cell_z * 2 + if octant & 4 != 0 { 1 } else { 0 };
             child_cells[octant as usize] = build_cell_recursive(
                 cache, children_storage, cx, cy, cz,
-                target_depth, current_depth + 1, iso_value,
+                target_depth, current_depth + 1, iso_value, max_depth,
             );
         }
         let all_empty = child_cells.iter().all(|c| matches!(c, Cell::Empty));

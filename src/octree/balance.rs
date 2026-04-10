@@ -66,13 +66,28 @@ pub fn enforce_balance_2to1(
                         cells_to_subdivide.push(key);
                     }
                 }
+
+                // Rule 3: Surface depth propagation — if THIS surface cell's
+                // face-neighbor is a Branch containing surface descendants,
+                // THIS cell must also be subdivided to prevent cross-depth
+                // gaps in mesh extraction (same-depth lookup).
+                if is_surface
+                    && actual_depth == depth
+                    && matches!(neighbor_cell, Cell::Branch { .. })
+                    && has_surface_descendant(octree, neighbor_cell)
+                    && depth < max_depth
+                {
+                    let key = (cx, cy, cz, depth);
+                    if seen_subdivide.insert(key) {
+                        cells_to_subdivide.push(key);
+                    }
+                }
             }
         }
 
         if cells_to_subdivide.is_empty() {
             break;
         }
-
         // Collect new corner positions needed for subdivision
         let mut new_points: Vec<[f64; 3]> = Vec::new();
         let mut new_grid: Vec<GridPos> = Vec::new();
@@ -138,9 +153,6 @@ pub fn enforce_balance_2to1(
     }
 
     // Phase 2: Edge completion — ensure every sign-change edge has all 4 sharing cells.
-    // This directly mirrors quad generation logic: for each surface leaf's canonical
-    // edge with a sign change, verify that the 3 neighbor cells exist as surface leaves.
-    // If any neighbor resolves to a non-surface cell, subdivide it.
     total_evals += ensure_edge_completeness(py, func, octree, cache)?;
 
     Ok(total_evals)
@@ -252,23 +264,23 @@ fn ensure_edge_completeness(
 
                     for (nx, ny, nz) in sharing {
                         if !find_surface_neighbor_same_depth(&leaf_set, nx, ny, nz, depth) {
-                            // Find the coarsest non-Branch cell containing this position.
-                            // Tag it with the TARGET depth so we subdivide all the way,
-                            // preventing intermediate-depth surface artifacts.
                             let (cell, actual_depth) = octree.cell_at(nx, ny, nz, depth);
                             if actual_depth < depth
                                 && !matches!(cell, Cell::Branch { .. })
                             {
+                                // Neighbor is coarser → subdivide neighbor
+                                // to match current cell's depth.
                                 let s = 1u32 << (depth - actual_depth);
                                 let key = (nx / s, ny / s, nz / s, actual_depth);
                                 if seen.insert(key) {
-                                    // Store (cell_coords, actual_depth) but also need
-                                    // target depth for deep subdivision
                                     cells_to_subdivide.push((key.0, key.1, key.2, key.3));
-                                    // Also record target depth
                                     target_depths.insert(key, depth);
                                 }
                             }
+                            // Note: when neighbor is a Branch at the same depth
+                            // (already refined to finer depth), we do NOT cascade
+                            // subdivision. Instead, extract_dc handles cross-depth
+                            // quad generation via find_neighbor's fallback lookup.
                         }
                     }
                 }
@@ -482,13 +494,23 @@ fn subdivide_cell_for_balance(
         };
     }
 
-    let idx = octree.children.len() as u32;
-    octree.children.push(child_cells);
-
-    // Navigate to the cell and replace it with a Branch
+    // Navigate to the cell and check if it's already a Branch.
+    // Overwriting a Branch would orphan its children (including deeper
+    // refinement from adaptive passes), so we must skip.
     let path = compute_path_for_balance(grid_x, grid_y, grid_z, depth, max_depth);
-    let cell_ref = navigate_to_cell_mut_balance(&mut octree.root, &mut octree.children, &path);
-    *cell_ref = Cell::Branch { children_index: idx };
+    // Use raw pointer to avoid borrow conflicts with octree.children
+    let cell_ptr = {
+        let cell_ref = navigate_to_cell_mut_balance(&mut octree.root, &mut octree.children, &path);
+        cell_ref as *mut Cell
+    };
+    unsafe {
+        if matches!(&*cell_ptr, Cell::Branch { .. }) {
+            return; // Already subdivided; don't overwrite
+        }
+        let idx = octree.children.len() as u32;
+        octree.children.push(child_cells);
+        *cell_ptr = Cell::Branch { children_index: idx };
+    }
 }
 
 fn compute_path_for_balance(grid_x: u32, grid_y: u32, grid_z: u32, depth: u8, max_depth: u8) -> Vec<u8> {
@@ -527,6 +549,18 @@ fn navigate_to_cell_mut_balance<'a>(
         }
     }
     unsafe { &mut *current }
+}
+
+/// Check if a cell's subtree contains any surface leaf (sign change).
+fn has_surface_descendant(octree: &Octree, cell: &Cell) -> bool {
+    match cell {
+        Cell::Leaf(d) => d.has_sign_change(),
+        Cell::Branch { children_index } => {
+            let children = &octree.children[*children_index as usize];
+            children.iter().any(|c| has_surface_descendant(octree, c))
+        }
+        _ => false,
+    }
 }
 
 fn collect_all_leaves_recursive(

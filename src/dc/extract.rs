@@ -46,9 +46,6 @@ pub fn extract_dc(
         return Ok(ExtractedMesh { vertices: Vec::new(), faces: Vec::new() });
     }
 
-    // Depth-aware cell map: supports cross-depth neighbor lookup for true adaptive.
-    // With 2:1 balance, depth difference is at most 1, so we try:
-    // same depth → coarser (depth-1) → finer (depth+1).
     let mut cell_map: HashMap<(u32, u32, u32, u8), usize> = HashMap::with_capacity(leaves.len());
     for (i, leaf) in leaves.iter().enumerate() {
         cell_map.insert((leaf.key.0, leaf.key.1, leaf.key.2, leaf.key.3), i);
@@ -278,7 +275,6 @@ pub fn extract_dc(
                 let mut n_a2 = cell_coords; n_a2[a2] -= 1;
                 let mut n_both = cell_coords; n_both[a1] -= 1; n_both[a2] -= 1;
 
-                // Cross-depth neighbor lookup: same depth → coarser → finer
                 let Some(ni_a1) = find_neighbor(&cell_map, n_a1[0], n_a1[1], n_a1[2], cell_depth) else { continue; };
                 let Some(ni_a2) = find_neighbor(&cell_map, n_a2[0], n_a2[1], n_a2[2], cell_depth) else { continue; };
                 let Some(ni_both) = find_neighbor(&cell_map, n_both[0], n_both[1], n_both[2], cell_depth) else { continue; };
@@ -414,15 +410,13 @@ fn remove_small_components(
         .map(|(&root, _)| root)
         .unwrap_or(0);
 
-    // Keep components that are at least 1% the size of the largest.
-    // This removes tiny artifacts while preserving genuine separate surfaces
-    // (e.g., two touching spheres).
-    let max_count = comp_face_count.values().copied().max().unwrap_or(0);
-    let threshold = (max_count / 100).max(4); // Remove components < 1% of largest, min 4 faces
+    // Keep only the largest connected component.
+    // Adaptive refinement can create disconnected surface patches at
+    // different octree depths; these are artifacts, not real geometry.
     let keep_faces: Vec<[i64; 3]> = faces.into_iter()
         .filter(|face| {
             let root = find(&mut parent, face[0] as usize);
-            comp_face_count[&root] >= threshold
+            root == largest_root
         })
         .collect();
 
@@ -453,9 +447,6 @@ fn remove_small_components(
 }
 
 /// Same-depth neighbor lookup for adaptive octrees.
-///
-/// Edge completion guarantees that all 4 cells sharing a sign-change edge
-/// exist at the same depth, so we only need same-depth lookup.
 #[inline]
 fn find_neighbor(
     cell_map: &HashMap<(u32, u32, u32, u8), usize>,
