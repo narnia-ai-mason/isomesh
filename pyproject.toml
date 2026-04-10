@@ -8,9 +8,21 @@ version = "0.1.0"
 description = "Fast, robust isosurface extraction from arbitrary implicit functions using adaptive octree and Manifold Dual Contouring"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Mason Seo" }]
+keywords = ["isosurface", "dual-contouring", "sdf", "mesh", "3d"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Topic :: Scientific/Engineering",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+]
 dependencies = [
     "numpy>=1.24",
 ]
+
+[project.urls]
+Repository = "https://github.com/narnia-ai-mason/isomesh"
 
 [tool.maturin]
 python-source = "python"
