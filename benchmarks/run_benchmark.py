@@ -424,6 +424,7 @@ VIEW_ANGLES = {
     "thin_shell_hemi": (15, -50),
     "mechanical_part": (25, -45),
     "torus": (30, -60),
+    "bunny": (25, 120),
 }
 DEFAULT_VIEW = (25, -60)
 
