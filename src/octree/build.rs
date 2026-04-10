@@ -34,6 +34,31 @@ pub fn build_adaptive(
     iso_value: f64,
     angle_threshold_deg: f64,
 ) -> PyResult<(Octree, u64)> {
+    build_adaptive_inner(py, func, bbox, min_depth, max_depth, iso_value, angle_threshold_deg, false)
+}
+
+pub fn build_adaptive_true(
+    py: Python<'_>,
+    func: &PyObject,
+    bbox: BoundingBox,
+    min_depth: u8,
+    max_depth: u8,
+    iso_value: f64,
+    angle_threshold_deg: f64,
+) -> PyResult<(Octree, u64)> {
+    build_adaptive_inner(py, func, bbox, min_depth, max_depth, iso_value, angle_threshold_deg, true)
+}
+
+fn build_adaptive_inner(
+    py: Python<'_>,
+    func: &PyObject,
+    bbox: BoundingBox,
+    min_depth: u8,
+    max_depth: u8,
+    iso_value: f64,
+    angle_threshold_deg: f64,
+    true_adaptive: bool,
+) -> PyResult<(Octree, u64)> {
     let bounds = bbox.to_cubic();
     let mut total_evals = 0u64;
     let angle_threshold_cos = (angle_threshold_deg * std::f64::consts::PI / 180.0).cos();
@@ -185,10 +210,16 @@ pub fn build_adaptive(
         }
     }
 
-    // Phase 3: Force all remaining surface leaves to max_depth.
+    // Phase 3: Either force uniform depth (legacy) or 2:1 balance (true adaptive).
+    if true_adaptive && min_depth < max_depth {
+        let balance_evals = crate::octree::balance::enforce_balance_2to1(
+            py, func, &mut octree, &mut cache,
+        )?;
+        total_evals += balance_evals;
+    } else if min_depth < max_depth {
+    // Legacy Phase 3: Force all remaining surface leaves to max_depth.
     // This ensures all leaves in DC extraction are at the same depth,
     // avoiding T-junction holes at depth boundaries.
-    if min_depth < max_depth {
         loop {
             let mut coarse_leaves = Vec::new();
             collect_coarse_surface_leaves(

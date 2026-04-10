@@ -1,9 +1,10 @@
 # What's Next
 
 현재 상태 (2026-04-10 기준):
-- Basic DC + adaptive octree + QEF (Jacobi SVD) + Newton projection
+- MDC Phase 1 (Connected Component Analysis) + adaptive octree + QEF (Probabilistic Quadrics) + Newton projection + Rayon 병렬화
 - Manifold/watertight for closed shapes at uniform surface depth
-- 80 tests, 16 benchmark shapes, PyMCubes 대비 동등 속도 + 우월한 sharp feature
+- Multi-component cells에서 component별 별도 vertex 생성 (bowtie 방지)
+- 80 Python tests + 37 Rust tests, 16 benchmark shapes
 
 ---
 
@@ -63,26 +64,27 @@
 **난이도: 높음 (L)**
 **예상 효과: 모든 topology에서 manifold/watertight 보장**
 
-### 현재 상태
-- Basic DC: cell당 vertex 1개
-- 단순 topology에서는 manifold, 복잡한 경우 (self-intersection 근처 등) non-manifold 가능
+### 현재 상태 (Phase 1 완료, Phase 2-3 남음)
+- ✅ Phase 1: Connected Component Analysis (`src/dc/component.rs`)
+  - 256개 corner_mask에 대한 precomputed lookup table (`COMPONENT_TABLE`)
+  - Union-Find 기반 connected component 분석
+  - 15개 Rust 단위 테스트 (256 전수 검증 포함)
+- ✅ Phase 3 (부분): Integration (`src/dc/extract.rs`)
+  - Component별 별도 QEF vertex 할당
+  - Component-aware quad generation (`vertex_for_edge`)
+  - Degenerate quad 필터링
+  - 단일 component fast path 최적화
+- ❌ Phase 2: Manifold Criterion Check (미구현)
+  - 현재 한계: union-of-cylinders 같은 복잡한 intersection에서 여전히 non-manifold 가능
+  - 이는 inside corners가 connected이지만 surface가 cell 내에서 여러 sheet를 형성하는 경우
 
-### 구현 방향 (Schaefer, Ju, Warren 2007)
-
-#### Phase 1: Connected Component Analysis
-- `src/dc/components.rs`
-- 각 leaf cell에서 inside corners의 connected component 분석 (Union-Find)
-- Corner graph: 두 inside corner가 sign change 없는 edge로 연결되면 같은 component
-- 각 component에 별도 QEF vertex 할당
+### 남은 구현 방향
 
 #### Phase 2: Manifold Criterion Check
 - `src/dc/manifold.rs`
 - Face/edge proc에서 vertex pairing이 non-manifold을 생성하는지 검사
 - 위반 시 cell의 vertex를 split (component 세분화)
 - Schaefer et al. 2007 §4의 collapsibility test 구현
-
-#### Phase 3: Integration
-- `src/dc/extract.rs` 수정: component별 vertex lookup, quad 생성 시 올바른 vertex 선택
 
 ### 핵심 참조
 - 논문: Schaefer, Ju, Warren. "Manifold Dual Contouring." IEEE TVCG 13(3), 2007.
@@ -91,7 +93,7 @@
 - 참조 구현: `libfive` (C++, production MDC)
 
 ### 난관
-- 256 corner configuration 전수 테스트 필요
+- ✅ 256 corner configuration 전수 테스트 — 완료
 - Manifold criterion의 edge case (특히 adaptive octree와 결합 시)
 - fidget의 구현을 상세히 연구할 것 — 실전 검증된 MDC
 
@@ -146,10 +148,10 @@
 ## 구현 권장 순서
 
 ```
-1. Rayon 병렬화 (S)     — 즉시 속도 개선, 다른 항목과 독립
-2. Probabilistic Quadrics (M) — QEF 속도 50x, Rayon과 시너지
-3. MDC (L)              — manifold 보장, True Adaptive의 선행 조건
-4. True Adaptive (XL)   — MDC + 2:1 balance + T-junction, 최종 목표
+1. ✅ Rayon 병렬화 (S)           — 완료
+2. ✅ Probabilistic Quadrics (M) — 완료
+3. 🔶 MDC (L)                   — Phase 1 완료, Phase 2 (Manifold Criterion) 남음
+4. True Adaptive (XL)            — MDC 완성 + 2:1 balance + T-junction, 최종 목표
 ```
 
 항목 3과 4는 순서가 중요: MDC 없이 True Adaptive를 하면 T-junction에서 non-manifold 문제가 더 심해짐.

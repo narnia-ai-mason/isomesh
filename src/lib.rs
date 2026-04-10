@@ -26,6 +26,7 @@ use pyo3::prelude::*;
     max_depth = 7,
     angle_threshold_deg = 30.0,
     iso_value = 0.0,
+    adaptive = false,
 ))]
 fn extract_mesh(
     py: Python<'_>,
@@ -36,9 +37,11 @@ fn extract_mesh(
     max_depth: u32,
     angle_threshold_deg: f64,
     iso_value: f64,
+    adaptive: bool,
 ) -> PyResult<(Py<PyArray2<f64>>, Py<PyArray2<i64>>)> {
     let bb = BoundingBox::new(bbox_min, bbox_max);
-    let (octree, _total_evals) = build::build_adaptive(
+    let build_fn = if adaptive { build::build_adaptive_true } else { build::build_adaptive };
+    let (octree, _total_evals) = build_fn(
         py, &eval_fn, bb,
         min_depth as u8, max_depth as u8,
         iso_value, angle_threshold_deg,

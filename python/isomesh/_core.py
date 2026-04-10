@@ -23,6 +23,7 @@ def extract(
     angle_threshold: float = 30.0,
     iso_value: float = 0.0,
     fd_step: float = 1e-5,
+    adaptive: bool = False,
 ) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
     """Extract an isosurface mesh from an implicit function.
 
@@ -87,6 +88,7 @@ def extract(
         max_depth=max_depth,
         angle_threshold_deg=angle_threshold,
         iso_value=iso_value,
+        adaptive=adaptive,
     )
 
     # Ensure correct dtypes

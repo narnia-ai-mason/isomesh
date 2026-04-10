@@ -64,3 +64,30 @@ def sdf_csg_cross(pos: np.ndarray):
     d_b, _ = sdf_box(pos, box_b)
     values = np.maximum(d_a, d_b)  # intersection
     return values, None
+
+
+# --- MDC adversarial shapes ---
+
+def sdf_two_spheres_touching(pos: np.ndarray, gap: float = 0.02):
+    """Two unit spheres nearly touching — triggers multi-component cells at the gap."""
+    offset = 1.0 + gap / 2.0
+    d1 = np.linalg.norm(pos - np.array([offset, 0, 0]), axis=1) - 1.0
+    d2 = np.linalg.norm(pos + np.array([offset, 0, 0]), axis=1) - 1.0
+    values = np.minimum(d1, d2)  # union
+    return values, None
+
+
+def sdf_hollow_cube(pos: np.ndarray, outer: float = 1.0, wall: float = 0.1):
+    """Hollow cube: outer box minus inner box. Thin walls trigger multi-component."""
+    d_outer, _ = sdf_box(pos, np.array([outer, outer, outer]))
+    d_inner, _ = sdf_box(pos, np.array([outer - wall, outer - wall, outer - wall]))
+    values = np.maximum(d_outer, -d_inner)
+    return values, None
+
+
+def sdf_cross_pipes(pos: np.ndarray, r: float = 0.3):
+    """Two orthogonal cylinders — complex topology at intersection."""
+    d_y = np.sqrt(pos[:, 0] ** 2 + pos[:, 2] ** 2) - r  # along Y-axis
+    d_x = np.sqrt(pos[:, 1] ** 2 + pos[:, 2] ** 2) - r  # along X-axis
+    values = np.minimum(d_y, d_x)  # union
+    return values, None
