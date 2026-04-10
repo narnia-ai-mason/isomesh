@@ -151,7 +151,7 @@ def sdf_thin_shell_hemi(pos, R=1.0, wall=0.08):
     """Hemisphere shell — thin wall, open boundary, inner surface visible."""
     r = np.linalg.norm(pos, axis=1)
     d_shell = np.maximum(r - R, (R - wall) - r)
-    d_plane = -pos[:, 2]  # keep z > 0 half
+    d_plane = pos[:, 2]  # keep z < 0 half (lower hemisphere, interior visible)
     return np.maximum(d_shell, d_plane), None
 
 
@@ -427,6 +427,12 @@ VIEW_ANGLES = {
 }
 DEFAULT_VIEW = (25, -60)
 
+# Per-shape up-axis override (default: Z-up)
+UP_VECTORS = {
+    "bunny": np.array([0.0, 1.0, 0.0]),  # Y-up
+}
+DEFAULT_UP = np.array([0.0, 0.0, 1.0])  # Z-up
+
 CELL_W, CELL_H = 500, 500
 LABEL_H = 70
 TITLE_H = 40
@@ -465,20 +471,36 @@ def _look_at(eye, target, up=np.array([0.0, 0.0, 1.0])):
     return mat
 
 
-def _cam_pose(center, extent, elev, azim):
+def _cam_pose(center, extent, elev, azim, up=None):
     """Camera pose from elevation/azimuth angles, looking at center."""
+    if up is None:
+        up = DEFAULT_UP
     dist = extent * 1.8
     er, ar = np.radians(elev), np.radians(azim)
-    eye = center + dist * np.array([
-        np.cos(er) * np.cos(ar),
-        np.cos(er) * np.sin(ar),
-        np.sin(er),
-    ])
-    return _look_at(eye, center)
+    # Compute eye position using the up-axis convention
+    cos_e, sin_e = np.cos(er), np.sin(er)
+    cos_a, sin_a = np.cos(ar), np.sin(ar)
+    if up[1] > 0.5:  # Y-up
+        offset = np.array([
+            cos_e * cos_a,
+            sin_e,
+            cos_e * sin_a,
+        ])
+    else:  # Z-up (default)
+        offset = np.array([
+            cos_e * cos_a,
+            cos_e * sin_a,
+            sin_e,
+        ])
+    eye = center + dist * offset
+    return _look_at(eye, center, up=up)
 
 
-def _render_one(vertices, faces, color_rgb, renderer, elev=25, azim=-60):
+def _render_one(vertices, faces, color_rgb, renderer, elev=25, azim=-60,
+                 up=None):
     """Render a single mesh via pyrender with 3-point lighting."""
+    if up is None:
+        up = DEFAULT_UP
     w, h = renderer.viewport_width, renderer.viewport_height
     if len(vertices) == 0 or len(faces) == 0:
         return Image.new("RGB", (w, h), (255, 255, 255))
@@ -502,24 +524,24 @@ def _render_one(vertices, faces, color_rgb, renderer, elev=25, azim=-60):
     extent = np.linalg.norm(mesh.bounds[1] - mesh.bounds[0])
 
     # Camera
-    cam_p = _cam_pose(center, extent, elev, azim)
+    cam_p = _cam_pose(center, extent, elev, azim, up=up)
     cam = pyrender.PerspectiveCamera(yfov=np.pi / 4.0)
     scene.add(cam, pose=cam_p)
 
     # Key light — upper-left of camera
-    key_p = _cam_pose(center, extent, elev + 30, azim - 40)
+    key_p = _cam_pose(center, extent, elev + 30, azim - 40, up=up)
     scene.add(pyrender.DirectionalLight(
         color=[1.0, 0.98, 0.95], intensity=2.5,
     ), pose=key_p)
 
     # Fill light — lower-right of camera, cooler
-    fill_p = _cam_pose(center, extent, elev - 10, azim + 55)
+    fill_p = _cam_pose(center, extent, elev - 10, azim + 55, up=up)
     scene.add(pyrender.DirectionalLight(
         color=[0.92, 0.95, 1.0], intensity=1.2,
     ), pose=fill_p)
 
     # Rim light — behind and above
-    rim_p = _cam_pose(center, extent, elev + 50, azim + 160)
+    rim_p = _cam_pose(center, extent, elev + 50, azim + 160, up=up)
     scene.add(pyrender.DirectionalLight(
         color=[1.0, 1.0, 1.0], intensity=0.8,
     ), pose=rim_p)
@@ -550,12 +572,14 @@ def render_comparison(shape_name, shape_results, output_dir):
     font = _get_font(14)
     title_font = _get_font(20)
     elev, azim = VIEW_ANGLES.get(shape_name, DEFAULT_VIEW)
+    up = UP_VECTORS.get(shape_name, DEFAULT_UP)
 
     cells = []
     for method_name, r in shape_results.items():
         m = r["metrics"]
         color = METHOD_COLORS_RGB.get(method_name, (0.5, 0.5, 0.5))
-        img = _render_one(r["vertices"], r["faces"], color, renderer, elev, azim)
+        img = _render_one(r["vertices"], r["faces"], color, renderer, elev, azim,
+                          up=up)
         lines = [
             METHODS[method_name]["label"],
             f"V={m['V']:,}  F={m['F']:,}",
@@ -616,6 +640,7 @@ def render_overview_grid(all_shape_results, method_names, output_dir):
     for row, sname in enumerate(shape_names):
         y0 = HDR_H + row * cell_h
         elev, azim = VIEW_ANGLES.get(sname, DEFAULT_VIEW)
+        up = UP_VECTORS.get(sname, DEFAULT_UP)
 
         # Row label
         bb = draw.textbbox((0, 0), sname, font=hdr_font)
@@ -629,7 +654,8 @@ def render_overview_grid(all_shape_results, method_names, output_dir):
             r = shape_res[mname]
             m = r["metrics"]
             color = METHOD_COLORS_RGB.get(mname, (0.5, 0.5, 0.5))
-            img = _render_one(r["vertices"], r["faces"], color, renderer, elev, azim)
+            img = _render_one(r["vertices"], r["faces"], color, renderer, elev, azim,
+                              up=up)
 
             x = ROW_W + col * G
             canvas.paste(img, (x, y0))

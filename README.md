@@ -76,18 +76,18 @@ def f(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
 
 ## Dual Contouring vs Marching Cubes
 
-Comprehensive comparison across 9 benchmark shapes using isomesh (Dual Contouring) and PyMCubes (Marching Cubes) at equivalent resolution (depth 6 = 64 cells/axis).
+Comprehensive comparison across 10 benchmark shapes using isomesh (Dual Contouring) and PyMCubes (Marching Cubes) at equivalent resolution (depth 6 = 64 cells/axis).
 
 ### Summary
 
 | Metric | MC (res=65) | DC Uniform (d=6) | DC Adaptive (4->6) | DC Adaptive (4->7) |
 |--------|:-----------:|:-----------------:|:-------------------:|:-------------------:|
-| Manifold | 9/9 | 9/9 | 9/9 | 9/9 |
-| Watertight | 9/9 | 9/9 | 9/9 | 9/9 |
-| Total vertices | 68,832 | 68,412 | 60,348 | 221,280 |
-| Total time | 0.39s | 3.57s | 2.86s | 6.40s |
-| Avg SDF error | 2.95e-04 | 6.27e-05 | 7.25e-05 | 3.07e-05 |
-| Avg min angle | 35.0 | 40.7 | 40.6 | 41.0 |
+| Manifold | 10/10 | 10/10 | 10/10 | 10/10 |
+| Watertight | 10/10 | 10/10 | 10/10 | 10/10 |
+| Total vertices | 81,112 | 80,693 | 72,629 | 270,770 |
+| Total time | 0.75s | 7.69s | 6.86s | 15.25s |
+| Avg SDF error | 3.10e-04 | 5.74e-05 | 5.75e-05 | 2.17e-05 |
+| Avg min angle | 34.7 | 39.8 | 39.6 | 40.0 |
 
 ### Surface Accuracy
 
@@ -95,11 +95,12 @@ Newton projection places DC vertices nearly exactly on the isosurface:
 
 | Shape | MC mean |SDF| | DC mean |SDF| | Improvement |
 |-------|:-------:|:-------:|:----------:|
-| sphere | 9.63e-05 | **4.57e-17** | ~10^12x |
-| thin_shell_hemi | 6.86e-05 | **8.29e-09** | ~8,000x |
-| chamfered_sphere | 2.58e-04 | **3.42e-05** | ~8x |
-| mechanical_part | 3.25e-04 | **5.65e-05** | ~6x |
-| simjeb_148 | 1.35e-03 | **3.39e-04** | ~4x |
+| sphere | 9.63e-05 | **1.21e-18** | ~10^13x |
+| thin_shell_hemi | 6.86e-05 | **1.17e-11** | ~10^6x |
+| chamfered_sphere | 2.58e-04 | **5.12e-07** | ~500x |
+| mechanical_part | 3.25e-04 | **4.05e-05** | ~8x |
+| bunny | 4.38e-04 | **4.38e-04** | ~1x |
+| simjeb_148 | 1.35e-03 | **8.95e-05** | ~15x |
 
 ### Triangle Quality
 
@@ -107,11 +108,13 @@ DC consistently produces better-shaped triangles (higher minimum angle = less de
 
 | Shape | MC min angle (avg) | DC min angle (avg) |
 |-------|:--:|:--:|
-| sphere | 31.6 | **45.2** |
-| thin_shell_hemi | 31.4 | **44.2** |
-| chamfered_sphere | 35.5 | **43.1** |
+| sphere | 31.6 | **43.7** |
+| thin_shell_hemi | 31.4 | **43.1** |
+| chamfered_sphere | 35.5 | **43.4** |
 | box | 44.1 | **44.5** |
 | mechanical_part | 40.3 | **41.0** |
+| bunny | 32.3 | **30.9** |
+| simjeb_148 | 34.6 | **33.2** |
 
 ### Sharp Feature Comparison
 
@@ -125,6 +128,7 @@ DC (Dual Contouring) preserves sharp edges and corners via QEF vertex placement.
 ### Thin Feature & Complex Geometry
 
 ![Thin shell comparison](docs/images/comparison_thin_shell_hemi.png)
+![Bunny comparison](docs/images/comparison_bunny.png)
 ![SimJEB 148 comparison](docs/images/comparison_simjeb_148.png)
 
 ### Adaptive Refinement
@@ -187,14 +191,14 @@ pytest tests/ -v
 
 ## Benchmarks
 
-The benchmark suite compares isomesh against PyMCubes across 9 shapes in 4 categories:
+The benchmark suite compares isomesh against PyMCubes across 10 shapes in 4 categories:
 
 | Category | Shapes | What it tests |
 |----------|--------|---------------|
 | Basic | Sphere, Torus | Smooth surfaces, analytic ground truth |
 | Sharp features | Box, Rotated box, Chamfered sphere, Cylinder, Mechanical part | Sharp edges, corners, non-axis-aligned edges, CSG operations |
 | Thin features | Hemisphere shell (wall=0.08) | Thin walls, open boundaries |
-| Complex geometry | SimJEB 148 (mesh-based SDF) | Real CAD parts, complex topology |
+| Complex geometry | Bunny, SimJEB 148 (mesh-based SDF) | Real CAD parts, complex topology |
 
 ```bash
 # Full benchmark (all shapes, all methods, with rendering)
