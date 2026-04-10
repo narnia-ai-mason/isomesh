@@ -361,50 +361,17 @@ pub fn extract_dc(
     Ok(ExtractedMesh { vertices, faces })
 }
 
-/// Cross-depth neighbor lookup for adaptive octrees.
+/// Same-depth neighbor lookup for adaptive octrees.
 ///
-/// Tries to find a surface leaf at coordinates (cx, cy, cz) at the given depth.
-/// Searches multiple depths since cells may exist at different levels after
-/// 2:1 balance and adaptive refinement. Tries: same depth → coarser depths →
-/// finer depths.
+/// Edge completion guarantees that all 4 cells sharing a sign-change edge
+/// exist at the same depth, so we only need same-depth lookup.
 #[inline]
 fn find_neighbor(
     cell_map: &HashMap<(u32, u32, u32, u8), usize>,
     cx: u32, cy: u32, cz: u32,
     depth: u8,
 ) -> Option<usize> {
-    // 1. Try exact match at same depth
-    if let Some(&idx) = cell_map.get(&(cx, cy, cz, depth)) {
-        return Some(idx);
-    }
-    // 2. Try coarser depths (depth-1, depth-2, ...)
-    // This handles cases where the neighbor is a larger cell at a lower depth
-    {
-        let mut sx = cx;
-        let mut sy = cy;
-        let mut sz = cz;
-        let mut d = depth;
-        while d > 0 {
-            sx /= 2;
-            sy /= 2;
-            sz /= 2;
-            d -= 1;
-            if let Some(&idx) = cell_map.get(&(sx, sy, sz, d)) {
-                return Some(idx);
-            }
-        }
-    }
-    // 3. Try finer (depth + 1): any child cell that overlaps
-    for dx in 0..2u32 {
-        for dy in 0..2u32 {
-            for dz in 0..2u32 {
-                if let Some(&idx) = cell_map.get(&(cx * 2 + dx, cy * 2 + dy, cz * 2 + dz, depth + 1)) {
-                    return Some(idx);
-                }
-            }
-        }
-    }
-    None
+    cell_map.get(&(cx, cy, cz, depth)).copied()
 }
 
 /// Select the vertex for a given cell and local edge.

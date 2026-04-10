@@ -73,6 +73,28 @@ class TestAdaptiveManifold:
         assert r["is_manifold"]
         assert r["is_watertight"]
 
+    def test_box_d3_5_manifold(self):
+        v, f = isomesh.extract(
+            func=sdf_box,
+            bbox_min=(-2, -2, -2), bbox_max=(2, 2, 2),
+            min_depth=3, max_depth=5, adaptive=True,
+        )
+        assert len(v) > 0
+        r = check_manifold_watertight(v, f)
+        assert r["is_manifold"]
+        assert r["is_watertight"]
+
+    def test_box_d3_6_manifold(self):
+        v, f = isomesh.extract(
+            func=sdf_box,
+            bbox_min=(-2, -2, -2), bbox_max=(2, 2, 2),
+            min_depth=3, max_depth=6, adaptive=True,
+        )
+        assert len(v) > 0
+        r = check_manifold_watertight(v, f)
+        assert r["is_manifold"]
+        assert r["is_watertight"]
+
     def test_torus_d4_5_manifold(self):
         v, f = isomesh.extract(
             func=sdf_torus,
