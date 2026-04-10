@@ -2,7 +2,7 @@
 
 Fast, robust isosurface extraction from arbitrary implicit functions using adaptive octree and Dual Contouring.
 
-![isomesh benchmark overview](docs/images/overview_grid.png)
+![isomesh benchmark overview](https://raw.githubusercontent.com/narnia-ai-mason/isomesh/main/docs/images/overview_grid.png)
 
 ## Features
 
@@ -41,11 +41,19 @@ vertices, faces = isomesh.extract(
 
 ## Installation
 
-Requires Python >= 3.11 and a Rust toolchain.
+Pre-built wheels are available for Linux (x86_64, aarch64), macOS (Apple Silicon), and Windows:
 
 ```bash
+pip install isomesh
+```
+
+### From source
+
+Requires a Rust toolchain (for building the native extension):
+
+```bash
+git clone https://github.com/narnia-ai-mason/isomesh.git && cd isomesh
 pip install maturin
-git clone <repo-url> && cd isomesh
 maturin develop --release
 ```
 
@@ -93,8 +101,8 @@ Comprehensive comparison across 10 benchmark shapes using isomesh (Dual Contouri
 
 Newton projection places DC vertices nearly exactly on the isosurface:
 
-| Shape | MC mean |SDF| | DC mean |SDF| | Improvement |
-|-------|:-------:|:-------:|:----------:|
+| Shape | MC mean &#124;SDF&#124; | DC mean &#124;SDF&#124; | Improvement |
+|-------|:-------------------:|:-------------------:|:-----------:|
 | sphere | 9.63e-05 | **1.21e-18** | ~10^13x |
 | thin_shell_hemi | 6.86e-05 | **1.17e-11** | ~10^6x |
 | chamfered_sphere | 2.58e-04 | **5.12e-07** | ~500x |
@@ -120,16 +128,16 @@ DC consistently produces better-shaped triangles (higher minimum angle = less de
 
 DC (Dual Contouring) preserves sharp edges and corners via QEF vertex placement. MC (Marching Cubes) rounds them by linear interpolation.
 
-![Box comparison](docs/images/comparison_box.png)
-![Rotated box comparison](docs/images/comparison_rotated_box.png)
-![Chamfered sphere comparison](docs/images/comparison_chamfered_sphere.png)
-![Mechanical part comparison](docs/images/comparison_mechanical_part.png)
+![Box comparison](https://raw.githubusercontent.com/narnia-ai-mason/isomesh/main/docs/images/comparison_box.png)
+![Rotated box comparison](https://raw.githubusercontent.com/narnia-ai-mason/isomesh/main/docs/images/comparison_rotated_box.png)
+![Chamfered sphere comparison](https://raw.githubusercontent.com/narnia-ai-mason/isomesh/main/docs/images/comparison_chamfered_sphere.png)
+![Mechanical part comparison](https://raw.githubusercontent.com/narnia-ai-mason/isomesh/main/docs/images/comparison_mechanical_part.png)
 
 ### Thin Feature & Complex Geometry
 
-![Thin shell comparison](docs/images/comparison_thin_shell_hemi.png)
-![Bunny comparison](docs/images/comparison_bunny.png)
-![SimJEB 148 comparison](docs/images/comparison_simjeb_148.png)
+![Thin shell comparison](https://raw.githubusercontent.com/narnia-ai-mason/isomesh/main/docs/images/comparison_thin_shell_hemi.png)
+![Bunny comparison](https://raw.githubusercontent.com/narnia-ai-mason/isomesh/main/docs/images/comparison_bunny.png)
+![SimJEB 148 comparison](https://raw.githubusercontent.com/narnia-ai-mason/isomesh/main/docs/images/comparison_simjeb_148.png)
 
 ### Adaptive Refinement
 
