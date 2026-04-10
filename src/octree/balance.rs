@@ -56,9 +56,7 @@ pub fn enforce_balance_2to1(
                     && actual_depth < depth
                     && !matches!(neighbor_cell, Cell::Leaf(d) if d.has_sign_change());
 
-                if (needs_balance || needs_surface_prop) && actual_depth >= min_depth {
-                    // Only subdivide cells at or above min_depth.
-                    // Cells below min_depth are collapsed tree nodes; leave them.
+                if needs_balance || needs_surface_prop {
                     let scale = 1u32 << (depth - actual_depth);
                     let coarse_cx = nx / scale;
                     let coarse_cy = ny / scale;
@@ -167,6 +165,16 @@ fn ensure_edge_completeness(
     const CANONICAL_EDGES: [u8; 3] = [0, 4, 8];
     const NON_AXIS_DIMS: [(usize, usize); 3] = [(1, 2), (0, 2), (0, 1)];
 
+    // Also check non-canonical edges (1-3, 5-7, 9-11) because surface cells
+    // that DON'T own a canonical edge still participate in quads generated
+    // by their neighbors. We must ensure ALL edges with sign changes have
+    // complete 4-cell neighborhoods.
+    const ALL_EDGES_BY_AXIS: [[u8; 4]; 3] = [
+        [0, 1, 2, 3],   // X-axis edges
+        [4, 5, 6, 7],   // Y-axis edges
+        [8, 9, 10, 11],  // Z-axis edges
+    ];
+
     loop {
         // Collect surface leaves
         let mut surface_leaves: Vec<(u32, u32, u32, u8)> = Vec::new();
@@ -182,59 +190,76 @@ fn ensure_edge_completeness(
         let mut seen: HashSet<(u32, u32, u32, u8)> = HashSet::new();
 
         for &(cx, cy, cz, depth) in &surface_leaves {
-            // Get corner values to check sign changes
+            // Get corner values to check sign changes on ALL 12 edges
             let scale = 1u32 << (max_depth - depth);
             let gx = cx * scale;
             let gy = cy * scale;
             let gz = cz * scale;
 
-            // Read corner values from cache
             let mut corner_values = [0.0f64; 8];
-            let child_scale = scale; // corner spacing for this cell
             for c in 0..8u8 {
-                let px = gx + if c & 1 != 0 { child_scale } else { 0 };
-                let py_c = gy + if c & 2 != 0 { child_scale } else { 0 };
-                let pz = gz + if c & 4 != 0 { child_scale } else { 0 };
+                let px = gx + if c & 1 != 0 { scale } else { 0 };
+                let py_c = gy + if c & 2 != 0 { scale } else { 0 };
+                let pz = gz + if c & 4 != 0 { scale } else { 0 };
                 if let Some(eval) = cache.get(&GridPos::new(px, py_c, pz)) {
                     corner_values[c as usize] = eval.value;
                 }
             }
 
             let cell_coords = [cx, cy, cz];
+            let max_coord = 1u32 << depth;
 
+            // Check ALL 12 edges, not just canonical 3.
+            // Each edge with a sign change needs 4 sharing cells at the same depth.
+            // The 4 cells sharing edge E (parallel to axis A, at specific a1, a2 offsets)
+            // are determined by the edge's offset bits in the two perpendicular axes.
             for axis in 0..3usize {
-                let edge_idx = CANONICAL_EDGES[axis];
                 let (a1, a2) = NON_AXIS_DIMS[axis];
-                let (c0, c1) = CubicBounds::edge_corners(edge_idx);
-                let val0 = corner_values[c0 as usize] - iso_value;
-                let val1 = corner_values[c1 as usize] - iso_value;
-                if (val0 < 0.0) == (val1 < 0.0) { continue; } // No sign change
+                for edge_in_group in 0..4u8 {
+                    let edge_idx = (axis as u8) * 4 + edge_in_group;
+                    let (c0, c1) = CubicBounds::edge_corners(edge_idx);
+                    let val0 = corner_values[c0 as usize] - iso_value;
+                    let val1 = corner_values[c1 as usize] - iso_value;
+                    if (val0 < 0.0) == (val1 < 0.0) { continue; }
 
-                if cell_coords[a1] == 0 || cell_coords[a2] == 0 { continue; }
+                    // Edge offset bits: bit 0 = a1 offset, bit 1 = a2 offset
+                    // For the 4 cells sharing this edge, the "owner" cell has
+                    // the edge at its minimum coordinates. We compute the owner
+                    // and the 3 other sharing cells.
+                    let a1_off = (edge_in_group & 1) as u32;
+                    let a2_off = ((edge_in_group >> 1) & 1) as u32;
 
-                // Check 3 neighbor positions
-                let neighbors: [(u32, u32, u32); 3] = {
-                    let mut n1 = cell_coords; n1[a1] -= 1;
-                    let mut n2 = cell_coords; n2[a2] -= 1;
-                    let mut n3 = cell_coords; n3[a1] -= 1; n3[a2] -= 1;
-                    [(n1[0], n1[1], n1[2]), (n2[0], n2[1], n2[2]), (n3[0], n3[1], n3[2])]
-                };
+                    // The 4 sharing cells in coordinate space
+                    let mut sharing = Vec::new();
+                    for da1 in 0..2u32 {
+                        for da2 in 0..2u32 {
+                            let mut nc = cell_coords;
+                            // The cell at (nc[a1] + a1_off - da1, nc[a2] + a2_off - da2)
+                            let na1 = cell_coords[a1] + a1_off;
+                            let na2 = cell_coords[a2] + a2_off;
+                            if na1 < da1 || na2 < da2 { continue; }
+                            let ca1 = na1 - da1;
+                            let ca2 = na2 - da2;
+                            if ca1 >= max_coord || ca2 >= max_coord { continue; }
+                            nc[a1] = ca1;
+                            nc[a2] = ca2;
+                            if nc[0] != cx || nc[1] != cy || nc[2] != cz {
+                                sharing.push((nc[0], nc[1], nc[2]));
+                            }
+                        }
+                    }
 
-                for &(nx, ny, nz) in &neighbors {
-                    // Check if neighbor exists as a surface leaf at any depth
-                    let found = find_surface_neighbor_same_depth(&leaf_set, nx, ny, nz, depth);
-                    if !found {
-                        // Need to subdivide the coarser cell containing this position.
-                        // May need to subdivide collapsed cells below min_depth
-                        // to reach the target depth where sign changes appear.
-                        let (cell, actual_depth) = octree.cell_at(nx, ny, nz, depth);
-                        if actual_depth < depth
-                            && !matches!(cell, Cell::Branch { .. })
-                        {
-                            let s = 1u32 << (depth - actual_depth);
-                            let key = (nx / s, ny / s, nz / s, actual_depth);
-                            if seen.insert(key) {
-                                cells_to_subdivide.push(key);
+                    for (nx, ny, nz) in sharing {
+                        if !find_surface_neighbor_same_depth(&leaf_set, nx, ny, nz, depth) {
+                            let (cell, actual_depth) = octree.cell_at(nx, ny, nz, depth);
+                            if actual_depth < depth
+                                && !matches!(cell, Cell::Branch { .. })
+                            {
+                                let s = 1u32 << (depth - actual_depth);
+                                let key = (nx / s, ny / s, nz / s, actual_depth);
+                                if seen.insert(key) {
+                                    cells_to_subdivide.push(key);
+                                }
                             }
                         }
                     }
@@ -314,11 +339,11 @@ fn find_surface_neighbor_same_depth(
 
 fn collect_surface_leaves_recursive(
     octree: &Octree, cell: &Cell,
-    cx: u32, cy: u32, cz: u32, depth: u8, min_depth: u8,
+    cx: u32, cy: u32, cz: u32, depth: u8, _min_depth: u8,
     result: &mut Vec<(u32, u32, u32, u8)>,
 ) {
     match cell {
-        Cell::Leaf(data) if data.has_sign_change() && depth >= min_depth => {
+        Cell::Leaf(data) if data.has_sign_change() => {
             result.push((cx, cy, cz, depth));
         }
         Cell::Branch { children_index } => {
@@ -329,7 +354,7 @@ fn collect_surface_leaves_recursive(
                     cx * 2 + if octant & 1 != 0 { 1 } else { 0 },
                     cy * 2 + if octant & 2 != 0 { 1 } else { 0 },
                     cz * 2 + if octant & 4 != 0 { 1 } else { 0 },
-                    depth + 1, min_depth, result,
+                    depth + 1, _min_depth, result,
                 );
             }
         }
