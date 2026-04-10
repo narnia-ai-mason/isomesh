@@ -280,14 +280,14 @@ METHODS = {
         "adaptive": False,
     },
     "adaptive": {
-        "label": "DC Adaptive (4→6)",
+        "label": "DC Adaptive (4->6)",
         "type": "isomesh",
         "min_depth": 4,
         "max_depth": 6,
         "adaptive": True,
     },
     "adaptive_fine": {
-        "label": "DC Adaptive (4→7)",
+        "label": "DC Adaptive (4->7)",
         "type": "isomesh",
         "min_depth": 4,
         "max_depth": 7,
@@ -856,7 +856,7 @@ def main():
         # Per-shape comparison image
         if not args.no_render and HAS_PYRENDER and shape_results:
             img = render_comparison(shape_name, shape_results, output_dir)
-            print(f"  → {img.name}")
+            print(f"  -> {img.name}")
 
         print("-" * len(hdr))
 
