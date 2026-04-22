@@ -222,14 +222,20 @@ fn build_adaptive_inner(
         )?;
         total_evals += balance_evals;
     } else if min_depth < max_depth {
-    // Legacy Phase 3: Force all remaining surface leaves to max_depth.
-    // This ensures all leaves in DC extraction are at the same depth,
-    // avoiding T-junction holes at depth boundaries.
+    // Legacy Phase 3: Force all surface cells to max_depth.
+    // Two rules (the second was missing, causing adaptive=False to produce
+    // holes on surfaces that Phase 1's coarse sampling classified as
+    // Empty/Full):
+    //   A. Surface leaves at depth < max_depth — subdivide them.
+    //   B. Empty/Full cells at depth < max_depth that are face-adjacent to a
+    //      surface leaf at a finer depth. Coarse corner sampling in Phase 1
+    //      missed the true surface inside these cells; without subdividing,
+    //      DC's same-depth neighbor lookup at max_depth fails and quads are
+    //      dropped.
         loop {
             let mut coarse_leaves = Vec::new();
-            collect_coarse_surface_leaves(
-                &octree, &octree.root, 0, 0, 0, 0, max_depth,
-                &mut coarse_leaves,
+            collect_phase3_refinables(
+                &octree, max_depth, &mut coarse_leaves,
             );
             if coarse_leaves.is_empty() { break; }
 
@@ -290,29 +296,88 @@ fn build_adaptive_inner(
     Ok((octree, total_evals))
 }
 
-/// Collect surface-crossing leaf cells that are coarser than max_depth.
-fn collect_coarse_surface_leaves(
+/// Collect cells that Phase 3 (legacy force-to-max) must subdivide.
+///
+/// - Rule A: surface leaves at depth < max_depth.
+/// - Rule B: Empty/Full cells at depth < max_depth that are face-adjacent
+///   to a surface leaf. The neighbor being a surface leaf means the true
+///   surface is right there; coarse sampling missed it for this cell.
+///   Subdividing exposes finer corner values where the sign change lives.
+///
+/// Each call returns the next batch of cells to subdivide. The Phase 3
+/// loop re-collects until no more candidates exist — guaranteed to
+/// terminate because every subdivision strictly increases depth and is
+/// bounded by max_depth.
+fn collect_phase3_refinables(
+    octree: &Octree,
+    max_depth: u8,
+    out: &mut Vec<(u32, u32, u32, u8)>,
+) {
+    let mut all_leaves: Vec<(u32, u32, u32, u8)> = Vec::new();
+    collect_all_leaves(octree, &octree.root, 0, 0, 0, 0, &mut all_leaves);
+
+    let mut seen: std::collections::HashSet<(u32, u32, u32, u8)> =
+        std::collections::HashSet::new();
+
+    for &(cx, cy, cz, depth) in &all_leaves {
+        let (cell, _) = octree.cell_at(cx, cy, cz, depth);
+        let is_surface = matches!(cell, Cell::Leaf(d) if d.has_sign_change());
+
+        // Rule A
+        if is_surface && depth < max_depth {
+            if seen.insert((cx, cy, cz, depth)) {
+                out.push((cx, cy, cz, depth));
+            }
+            continue;
+        }
+
+        // Rule B: only surface leaves can activate this rule on their
+        // coarser Empty/Full neighbors.
+        if !is_surface {
+            continue;
+        }
+        let neighbors = crate::octree::face_neighbors(cx, cy, cz, depth);
+        for neighbor in neighbors.iter().flatten() {
+            let (nx, ny, nz) = *neighbor;
+            let (ncell, nd) = octree.cell_at(nx, ny, nz, depth);
+            if nd >= depth || nd >= max_depth {
+                continue;
+            }
+            if !matches!(ncell, Cell::Empty | Cell::Full) {
+                continue;
+            }
+            let scale = 1u32 << (depth - nd);
+            let coarse = (nx / scale, ny / scale, nz / scale, nd);
+            if seen.insert(coarse) {
+                out.push(coarse);
+            }
+        }
+    }
+}
+
+/// Walk the octree and report every non-Branch cell with its grid coords
+/// and depth.
+fn collect_all_leaves(
     octree: &Octree, cell: &Cell,
-    cx: u32, cy: u32, cz: u32, depth: u8, max_depth: u8,
+    cx: u32, cy: u32, cz: u32, depth: u8,
     result: &mut Vec<(u32, u32, u32, u8)>,
 ) {
     match cell {
-        Cell::Leaf(data) if data.has_sign_change() && depth < max_depth => {
+        Cell::Empty | Cell::Full | Cell::Leaf(_) => {
             result.push((cx, cy, cz, depth));
         }
         Cell::Branch { children_index } => {
             let children = &octree.children[*children_index as usize];
             for octant in 0..8u8 {
-                collect_coarse_surface_leaves(
+                collect_all_leaves(
                     octree, &children[octant as usize],
                     cx * 2 + if octant & 1 != 0 { 1 } else { 0 },
                     cy * 2 + if octant & 2 != 0 { 1 } else { 0 },
                     cz * 2 + if octant & 4 != 0 { 1 } else { 0 },
-                    depth + 1, max_depth, result,
+                    depth + 1, result,
                 );
             }
         }
-        _ => {}
     }
 }
 

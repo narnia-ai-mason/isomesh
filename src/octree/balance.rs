@@ -497,20 +497,31 @@ fn subdivide_cell_for_balance(
     // Navigate to the cell and check if it's already a Branch.
     // Overwriting a Branch would orphan its children (including deeper
     // refinement from adaptive passes), so we must skip.
+    //
+    // ORDER MATTERS. `Vec::push` below can reallocate `octree.children`,
+    // which invalidates any &mut / raw pointer obtained before the push.
+    // The previous implementation took a raw pointer, then pushed, then
+    // wrote through the pointer — a classic use-after-free on glibc when
+    // the reallocation actually moves the buffer (most visible at
+    // max_depth=8 where `children` grows past its initial capacity many
+    // times during balance propagation, crashing with SIGSEGV on Linux
+    // while appearing to "work" on macOS libmalloc). Fix: close the
+    // check-borrow, push, then re-navigate to obtain a fresh reference.
     let path = compute_path_for_balance(grid_x, grid_y, grid_z, depth, max_depth);
-    // Use raw pointer to avoid borrow conflicts with octree.children
-    let cell_ptr = {
-        let cell_ref = navigate_to_cell_mut_balance(&mut octree.root, &mut octree.children, &path);
-        cell_ref as *mut Cell
-    };
-    unsafe {
-        if matches!(&*cell_ptr, Cell::Branch { .. }) {
+    {
+        let cell_ref = navigate_to_cell_mut_balance(
+            &mut octree.root, &mut octree.children, &path,
+        );
+        if matches!(cell_ref, Cell::Branch { .. }) {
             return; // Already subdivided; don't overwrite
         }
-        let idx = octree.children.len() as u32;
-        octree.children.push(child_cells);
-        *cell_ptr = Cell::Branch { children_index: idx };
     }
+    let idx = octree.children.len() as u32;
+    octree.children.push(child_cells);
+    let cell_ref = navigate_to_cell_mut_balance(
+        &mut octree.root, &mut octree.children, &path,
+    );
+    *cell_ref = Cell::Branch { children_index: idx };
 }
 
 fn compute_path_for_balance(grid_x: u32, grid_y: u32, grid_z: u32, depth: u8, max_depth: u8) -> Vec<u8> {

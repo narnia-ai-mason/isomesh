@@ -150,3 +150,45 @@ class TestAdaptiveVertexReduction:
         for i in range(1, len(results)):
             np.testing.assert_array_equal(results[0][0], results[i][0])
             np.testing.assert_array_equal(results[0][1], results[i][1])
+
+
+class TestAdaptiveFalseForceToMax:
+    """Regression guard for the Phase 3 legacy force-to-max bug.
+
+    Before the fix: running `adaptive=False` with `min_depth < max_depth`
+    on an SDF where Phase 1's coarse sampling misclassifies surface-
+    traversed cells as Empty (e.g. a thin torus tube, thin shell) left
+    those cells unrefined. DC's same-depth neighbor lookup at max_depth
+    then dropped quads across the missed boundary, opening holes.
+
+    After the fix: surface leaves propagate to their coarser Empty/Full
+    face-neighbors, subdividing them down to max_depth. The result must
+    match what you'd get with `min_depth=max_depth` (a pure uniform grid).
+    """
+
+    @pytest.mark.parametrize("min_d,max_d", [(3, 5), (3, 6), (4, 6)])
+    def test_torus_thin_matches_uniform(self, min_d, max_d):
+        """Torus with a narrow tube (r=0.3) — coarse grid misses the tube."""
+        v_uniform, f_uniform = isomesh.extract(
+            func=sdf_torus,
+            bbox_min=(-2, -2, -2), bbox_max=(2, 2, 2),
+            min_depth=max_d, max_depth=max_d, adaptive=False,
+        )
+        v_split, f_split = isomesh.extract(
+            func=sdf_torus,
+            bbox_min=(-2, -2, -2), bbox_max=(2, 2, 2),
+            min_depth=min_d, max_depth=max_d, adaptive=False,
+        )
+        np.testing.assert_array_equal(v_uniform, v_split)
+        np.testing.assert_array_equal(f_uniform, f_split)
+
+    def test_torus_watertight(self):
+        v, f = isomesh.extract(
+            func=sdf_torus,
+            bbox_min=(-2, -2, -2), bbox_max=(2, 2, 2),
+            min_depth=3, max_depth=6, adaptive=False,
+        )
+        assert len(v) > 0
+        r = check_manifold_watertight(v, f)
+        assert r["is_watertight"]
+        assert r["is_manifold"]
