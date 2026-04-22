@@ -1,12 +1,26 @@
 # Known Issue: SIGSEGV with `adaptive=True, max_depth=8` on Ubuntu server
 
 ## Status
-**Likely resolved — awaiting Ubuntu verification.** Static analysis of
-the adaptive-path code uncovered a use-after-free in
-`octree::balance::subdivide_cell_for_balance` (balance.rs ~line 500) that
-matches the observed platform dependency exactly. Fix applied on branch
-`fix/balance-uaf`; still need to run on the original Ubuntu server to
-confirm the SIGSEGV is gone.
+**Resolved — verified on Ubuntu (2026-04-23).** The use-after-free in
+`octree::balance::subdivide_cell_for_balance` (balance.rs ~line 500) was
+the root cause, fixed on branch `fix/balance-uaf`.
+
+### Verification
+Ran `devdocs/deepsdf_debug/repro_highres.py` on an Ubuntu 24.04 box
+(x86_64, RTX 4090, CUDA 12.8 driver, torch 2.6.0+cu124, Python 3.11,
+rustc 1.95.0 release build via maturin) against the original
+`long_run.ckpt`. All three configs pass with `adaptive=True,
+max_depth=8` — the exact crash config from the bug report — on both CPU
+and CUDA autograd paths:
+
+| config       | V      | F       | CUDA time | metrics                                     |
+|--------------|--------|---------|-----------|---------------------------------------------|
+| uniform_d7   | 18,803 | 37,696  | 2.3 s     | watertight=True boundary=0 components=1     |
+| uniform_d8   | 75,376 | 150,788 | 16.5 s    | watertight=True boundary=0 components=1     |
+| adaptive_d8  | 75,376 | 150,788 | 1.8 s     | watertight=True boundary=0 components=1     |
+
+Vertex/face counts match the macOS numbers exactly, no SIGSEGV, no heap
+corruption. CPU run separately also clean (adaptive_d8 in 23.1 s).
 
 ### Root cause (high confidence)
 The offending function took a raw pointer into `octree.children[i][j]`,
